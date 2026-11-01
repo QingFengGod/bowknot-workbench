@@ -1,11 +1,7 @@
 <template>
   <ConfigProvider :prefix-cls="PREFIX" :theme="{ cssVar: { prefix: PREFIX }, token: appStore.themeToken }">
     <AApp class="w-full h-full">
-      <RouterView v-slot:default="{ Component }">
-        <Transition mode="out-in" name="transition-fade">
-          <component :is="Component" />
-        </Transition>
-      </RouterView>
+      <RouterView />
     </AApp>
   </ConfigProvider>
 </template>

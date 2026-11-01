@@ -30,20 +30,20 @@
 .transition-offset-left-enter-from,
 .transition-offset-right-leave-to {
   opacity: 0;
-  transform: translateX(10px);
+  transform: translateX(-18px);
 }
 .transition-offset-left-leave-to,
 .transition-offset-right-enter-from {
   opacity: 0;
-  transform: translateX(-10px);
+  transform: translateX(18px);
 }
 .transition-offset-top-enter-from,
 .transition-offset-bottom-leave-to {
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(-18px);
 }
 .transition-offset-top-leave-to,
 .transition-offset-bottom-enter-from {
   opacity: 0;
-  transform: translateY(-10px);
+  transform: translateY(18px);
 }
