@@ -8,7 +8,7 @@ export const useAppStore = defineStore('app', {
   state(): AppStoreState {
     return {
       themeToken: {
-        colorPrimary: '#1AA069'
+        colorPrimary: '#FF4500'
       }
     }
   }

@@ -1,6 +1,6 @@
 <template>
   <ConfigProvider :prefix-cls="PREFIX" :theme="{ cssVar: { prefix: PREFIX }, token: appStore.themeToken }">
-    <AApp class="w-full h-full">
+    <AApp class="w-full h-full bk-bg-layout">
       <RouterView />
     </AApp>
   </ConfigProvider>

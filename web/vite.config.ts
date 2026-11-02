@@ -33,6 +33,7 @@ export default defineConfig(({ mode }) => {
     },
     base: env.VITE_ROUTER_BASE,
     build: {
+      sourcemap: false,
       modulePreload: false,
       rolldownOptions: {
         output: {

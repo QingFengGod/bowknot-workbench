@@ -3,7 +3,7 @@ import Icon from './Icon/Icon.vue'
 import Grid from './Grid/Grid.vue'
 import Cell from './Grid/Cell.vue'
 import Flex from './Flex/Flex.vue'
-import { Button } from 'antdv-next'
+import { Avatar, Button } from 'antdv-next'
 
 export function globalComponents(): Plugin {
   return {
@@ -13,6 +13,7 @@ export function globalComponents(): Plugin {
       app.component(`BkCell`, Cell)
       app.component(`BkFlex`, Flex)
       app.component(Button.name, Button)
+      app.component(Avatar.name, Avatar)
     }
   }
 }
