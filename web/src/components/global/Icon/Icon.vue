@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<IconProps>(), {
   size: '24px'
 })
 
-const iconClass = computed(() => `bk-icon icon-${props.name}`)
+const iconClass = computed(() => `bk-icon i-${props.name}`)
 
 const styles = computed<CSSProperties>(() => {
   return {

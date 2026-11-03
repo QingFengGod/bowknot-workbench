@@ -2,9 +2,10 @@ import type { RouteRecordInfo } from 'vue-router'
 
 export interface RouteNamedMap {
   Root: RouteRecordInfo<'Root', '/'>
-  Login: RouteRecordInfo<'Login', '/login'>
-  Workbench: RouteRecordInfo<'Workbench', '/workbench'>
-  NotFound: RouteRecordInfo<'NotFound', string>
+  LoginPage: RouteRecordInfo<'LoginPage', '/login'>
+  WorkbenchPage: RouteRecordInfo<'WorkbenchPage', '/workbench'>
+  WorkbenchPage: RouteRecordInfo<'WorkbenchPage', '/workbench'>
+  NotFoundPage: RouteRecordInfo<'NotFoundPage', string>
 }
 
 export type RoutePaths = keyof RouteNamedMap

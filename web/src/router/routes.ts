@@ -8,15 +8,20 @@ export const rootRoute: RouteRecordRaw = {
   children: [
     {
       path: '/workbench',
-      name: 'Workbench',
+      name: 'WorkbenchPage',
       component: () => import('@/views/workbench/index.vue')
+    },
+    {
+      path: '/assistant',
+      name: 'AssistantPage',
+      component: () => import('@/views/assistant/index.vue')
     }
   ]
 }
 
 export const loginRoute: RouteRecordRaw = {
   path: '/login',
-  name: 'Login',
+  name: 'LoginPage',
   component: () => import('@/views/login/index.vue')
 }
 

@@ -1,10 +1,10 @@
-import { defineConfig, presetWind3 } from 'unocss'
+import { defineConfig, presetWind3, transformerDirectives } from 'unocss'
 import { presetAntd } from '@antdv-next/unocss'
 import { PREFIX } from './src/constants'
 
 export default defineConfig({
   presets: [
-    presetWind3({ dark: 'class', preflight: false }),
+    presetWind3({ dark: 'class', preflight: 'on-demand' }),
     presetAntd({
       allowUnprefixed: false,
       prefix: PREFIX,
@@ -12,6 +12,11 @@ export default defineConfig({
       tokenPrefix: PREFIX
     })
   ],
+  transformers: [transformerDirectives()],
+  shortcuts: {
+    'flex-center': 'flex items-center justify-center',
+    'page-container': 'w-full h-full bk-bg-container rd-10px b-all-1 bk-p-sm'
+  },
   rules: [
     [
       /^b-(x|y|l|r|t|b|all)(?:-(\d+(?:\.\d+)?))?(?:-(.+))?$/,

@@ -1,5 +1,16 @@
 // 图标名称与 src/styles/icons.css 中的 .icon-* 类一一对应
-export type IconName = 'prime-cog' | 'logo-bow' | 'moon-filled-loop'
+
+type IconSets = {
+  prime: 'home' | 'th-large' | 'chevron-right' | 'cog' | 'gift' | 'share-alt' | 'sparkles'
+  'game-icons': 'bow-tie-ribbon'
+  'line-md': 'moon-filled-loop'
+  'park-outline': 'workbench'
+  'griddy-icons': 'ai-assistant'
+}
+type IconSet = keyof IconSets
+export type IconName = {
+  [k in IconSet]: `${k}-${IconSets[k]}`
+}[IconSet]
 
 export type IconProps = {
   name: IconName
