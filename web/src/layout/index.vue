@@ -25,7 +25,7 @@
         <LayoutNavs :active-key="state.activeNavKey" :items="navs" @item-click="onNavItemClick" />
       </div>
       <div class="navs-collapsed-btn" @click="state.navCollapsed = !state.navCollapsed">
-        <BkIcon name="prime-chevron-right" size="16px" :rotate="state.navCollapsed ? '180deg' : ''" />
+        <BkIcon name="prime-chevron-right" size="16px" :rotate="state.navCollapsed ? '' : '180deg'" />
       </div>
     </div>
   </div>
@@ -101,7 +101,7 @@ const onToggleTheme = (e: MouseEvent) => {
 .navs-panel {
   position: absolute;
   top: 50%;
-  right: 0;
+  left: 0;
   transform: translate(0, -50%);
   transition: transform 0.3s ease-in-out;
   width: 80px;
@@ -109,11 +109,11 @@ const onToggleTheme = (e: MouseEvent) => {
 .navs-container {
   @apply bk-bg-container bk-shadow;
   width: 80px;
-  border-radius: 20px 0 0 20px;
+  border-radius: 0 20px 20px 0;
   overflow: hidden;
 }
 .navs-panel.collapsed {
-  transform: translate(100%, -50%);
+  transform: translate(-100%, -50%);
 }
 .navs-collapsed-btn {
   @apply bk-bg-container bk-shadow b-l-1;
@@ -122,12 +122,12 @@ const onToggleTheme = (e: MouseEvent) => {
   display: flex;
   justify-content: center;
   align-items: center;
-  border-radius: 20px 0 0 20px;
+  border-radius: 0 20px 20px 0;
   box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
   cursor: pointer;
   position: absolute;
   top: 50%;
-  left: -20px;
+  right: -20px;
   transform: translateY(-50%);
 }
 </style>
