@@ -4,7 +4,7 @@
       <BkFlex
         v-for="item in themeModeList"
         :key="item.value"
-        class="popover-item"
+        class="popover-item bk-mb-xxs"
         :class="item.value === appStore.themeMode ? ['bk-bg-primary-bg-hover text-primary'] : []"
         align="center"
         col-gap="6px"
@@ -29,7 +29,7 @@ defineOptions({ name: 'ThemeToggle' })
 const appStore = useAppStore()
 
 const themeModeList = [
-  { label: '跟随系统', icon: 'line-md-computer', value: 'system' },
+  { label: '跟随系统', icon: 'prime-desktop', value: 'system' },
   { label: '明亮模式', icon: 'line-md-sunny-loop', value: 'light' },
   { label: '暗黑模式', icon: 'line-md-moon-loop', value: 'dark' }
 ] as const
@@ -39,9 +39,14 @@ const activeItem = computed(() => {
 })
 
 const onToggleTheme = (e: MouseEvent, mode: ThemeMode) => {
+  if (mode === appStore.themeMode) return
   const x = e.clientX
   const y = e.clientY
   const toDark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  if (toDark === appStore.isDark) {
+    appStore.setThemeMode(mode)
+    return
+  }
   // 画圆
   const endRadius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))
 
