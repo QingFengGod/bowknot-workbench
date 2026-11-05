@@ -20,8 +20,8 @@ const styles = computed<CSSProperties>(() => {
     color: props.color,
     width: props.size,
     height: props.size,
-    padding: props.padding,
-    transform: props.rotate ? `rotate(${props.rotate})` : undefined
+    transition: 'transform 0.3s ease-in-out',
+    transform: props.rotate ? `rotate(${props.rotate}deg)` : undefined
   }
 })
 </script>

@@ -15,7 +15,8 @@ export default defineConfig({
   transformers: [transformerDirectives()],
   shortcuts: {
     'flex-center': 'flex items-center justify-center',
-    'page-container': 'w-full h-full bk-bg-container rd-10px b-all-1 bk-p-sm'
+    'popover-item': 'bk-px-sm bk-py-xs hover:bk-bg-primary-bg-hover hover:text-primary bk-rd-lg cursor-pointer',
+    'box-container': 'bk-bg-container bk-rd-lg b-all-1'
   },
   rules: [
     [

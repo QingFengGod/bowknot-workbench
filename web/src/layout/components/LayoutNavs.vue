@@ -4,24 +4,24 @@
       v-for="item in props.items"
       :key="item.key"
       class="flex flex-col items-center bk-py-sm cursor-pointer"
-      :class="[item.key === props.activeKey ? 'bg-primary text-white' : '']"
+      :class="[item.key === props.activeKey ? 'bk-bg-primary-bg-hover text-primary' : '']"
       @click="emits('itemClick', item)"
     >
-      <BkIcon :name="item.iconName"></BkIcon>
-      <div>{{ item.title }}</div>
+      <BkIcon v-if="item.iconName" :name="item.iconName"></BkIcon>
+      <div>{{ item.label }}</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import type { NavItem } from './type'
+import type { MenuItem } from '@/store'
 
 defineOptions({ name: 'LayoutNavs' })
 
 const props = withDefaults(
   defineProps<{
-    activeKey?: NavItem['key']
-    items?: NavItem[]
+    activeKey?: MenuItem['key']
+    items?: MenuItem[]
   }>(),
   {
     activeKey: '',
@@ -30,7 +30,7 @@ const props = withDefaults(
 )
 
 const emits = defineEmits<{
-  itemClick: [item: NavItem]
+  itemClick: [item: MenuItem]
 }>()
 </script>
 

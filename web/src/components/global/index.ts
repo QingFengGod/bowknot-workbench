@@ -6,7 +6,7 @@ export * from './Grid/type'
 import Cell from './Grid/Cell.vue'
 import Flex from './Flex/Flex.vue'
 export * from './Flex/type'
-import { Avatar, Button } from 'antdv-next'
+import { Avatar, Button, Menu, Popover, Tooltip } from 'antdv-next'
 
 export function globalComponents(): Plugin {
   return {
@@ -17,6 +17,9 @@ export function globalComponents(): Plugin {
       app.component(`BkFlex`, Flex)
       app.component(Button.name, Button)
       app.component(Avatar.name, Avatar)
+      app.component(Menu.name, Menu)
+      app.component(Popover.name, Popover)
+      app.component(Tooltip.name, Tooltip)
     }
   }
 }

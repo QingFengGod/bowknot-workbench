@@ -1,99 +1,70 @@
 <template>
-  <div class="w-full h-full relative overflow-x-clip" style="--layout-header-height: 52px">
-    <div class="h-52px bk-bg-container flex bk-shadow b-b-1">
-      <div class="text-primary h-52px w-80px flex-center">
-        <BkIcon name="game-icons-bow-tie-ribbon" size="28px" />
+  <BkGrid tmpl-cols="max-content max-content 1fr" tmpl-rows="52px 1fr" row-gap="0" col-gap="0">
+    <BkCell area="1/1/3/2" class="w-78px bk-bg-container b-r-1">
+      <div class="text-primary h-58px w-full flex-center">
+        <BkIcon name="game-icons-bow-tie-ribbon" size="32px" />
       </div>
-      <BkFlex class="flex-1 bk-px-sm" justify="space-between" align="center">
-        <span>s</span>
-        <BkFlex justify="flex-end" align="center">
-          <BkIcon name="line-md-moon-filled-loop" class="cursor-pointer" title="切换主题" @click="onToggleTheme" />
-          <AAvatar>未</AAvatar>
-        </BkFlex>
+      <div class="w-full" style="height: calc(100% - 58px)">
+        <LayoutNavs :active-key="state.activeNavKey" :items="appStore.menus" @item-click="onNavItemClick" />
+      </div>
+    </BkCell>
+    <BkCell area="1/2/3/3" class="w-220px bk-bg-container b-r-1" v-if="menus.length > 0">
+      <AMenu :items="menus">
+        <template #iconRender="item"> <BkIcon :name="item.iconName" /> </template>
+      </AMenu>
+    </BkCell>
+
+    <BkCell area="1/3/2/4" class="bk-bg-container b-b-1 bk-px-sm" flex align="center" justify="space-between">
+      <BkFlex>
+        <BkIcon name="line-md-menu-fold-left"></BkIcon>
       </BkFlex>
-    </div>
-    <div class="bk-p-md" style="height: calc(100% - var(--layout-header-height))">
+      <BkFlex justify="flex-end" align="center">
+        <ThemeToggle />
+        <AAvatar>未</AAvatar>
+      </BkFlex>
+    </BkCell>
+
+    <BkCell area="2/3/3/4" class="bk-p-sm">
       <RouterView v-slot="{ Component }">
         <Transition name="transition-fade" mode="out-in">
           <component :is="Component" :key="route.path"></component>
         </Transition>
       </RouterView>
-    </div>
-
-    <div :class="['navs-panel', state.navCollapsed ? 'collapsed' : '']">
-      <div class="navs-container">
-        <LayoutNavs :active-key="state.activeNavKey" :items="navs" @item-click="onNavItemClick" />
-      </div>
-      <div class="navs-collapsed-btn" @click="state.navCollapsed = !state.navCollapsed">
-        <BkIcon name="prime-chevron-right" size="16px" :rotate="state.navCollapsed ? '' : '180deg'" />
-      </div>
-    </div>
-  </div>
+    </BkCell>
+  </BkGrid>
 </template>
 
 <script setup lang="ts">
-import { nextTick, reactive } from 'vue'
-import LayoutNavs from './LayoutNavs.vue'
-import type { LayoutState, NavItem } from './type'
+import { computed, reactive } from 'vue'
+import LayoutNavs from './components/LayoutNavs.vue'
 import { useRoute, useRouter } from 'vue-router'
+import type { MenuItem } from '@/store'
 import { useAppStore } from '@/store'
+import ThemeToggle from './components/ThemeToggle.vue'
 
 defineOptions({ name: 'Layout' })
 const router = useRouter()
 const route = useRoute()
 const appStore = useAppStore()
-
+type LayoutState = {
+  activeNavKey: string
+  navCollapsed: boolean
+}
 const state = reactive<LayoutState>({
   activeNavKey: route.matched[1].path,
   navCollapsed: false
 })
 
-const navs: NavItem[] = [
-  { title: '工作台', iconName: 'park-outline-workbench', key: '/workbench' },
-  // { title: 'AppStore', iconName: 'prime-gift', key: '/app-store' },
-  { title: 'Apps', iconName: 'prime-th-large', key: '/apps' },
-  { title: '助手', iconName: 'griddy-icons-ai-assistant', key: '/assistant' },
-  { title: 'agents', iconName: 'prime-share-alt', key: '/agents' },
-  { title: 'AIGC', iconName: 'prime-sparkles', key: '/aigc' }
-]
+const menus = computed(() => {
+  let find = appStore.menus.find((item) => item.key === state.activeNavKey)
+  if (find) return find.children ?? []
+  return []
+})
 
-const onNavItemClick = (item: NavItem) => {
+const onNavItemClick = (item: MenuItem) => {
   if (item.key === state.activeNavKey) return
   state.activeNavKey = item.key
   router.push(item.key)
-}
-
-const onToggleTheme = (e: MouseEvent) => {
-  const x = e.clientX
-  const y = e.clientY
-  // 画圆
-  const endRadius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))
-  const toDark = !appStore.isDark
-
-  if (document.startViewTransition == undefined) {
-    appStore.setThemeMode(toDark ? 'dark' : 'light')
-    return
-  }
-
-  const transition = document.startViewTransition(async () => {
-    appStore.setThemeMode(toDark ? 'dark' : 'light')
-    await nextTick()
-  })
-
-  transition.ready.then(() => {
-    const clipPath = [`circle(0px at ${x}px ${y}px)`, `circle(${endRadius}px at ${x}px ${y}px)`]
-    document.documentElement.animate(
-      {
-        clipPath: toDark ? clipPath : clipPath.reverse()
-      },
-      {
-        duration: 300,
-        easing: 'ease-in',
-        fill: 'both',
-        pseudoElement: toDark ? '::view-transition-new(root)' : '::view-transition-old(root)'
-      }
-    )
-  })
 }
 </script>
 

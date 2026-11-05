@@ -4,7 +4,10 @@
     :theme="{
       algorithm: appStore.isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
       cssVar: { prefix: PREFIX },
-      token: appStore.isDark ? appStore.darkToken : appStore.lightToken
+      token: appStore.themeToken,
+      components: {
+        Popover: { innerPadding: 6 }
+      }
     }"
   >
     <AApp class="w-full h-full bk-bg-layout">
