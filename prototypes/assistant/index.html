@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>bowknot · 助手原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- 统一 Lucide 图标：内联 SVG sprite，离线可用，不依赖 CDN -->
+    <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-dashboard" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="9" rx="1.5" />
+        <rect x="14" y="3" width="7" height="5" rx="1.5" />
+        <rect x="14" y="12" width="7" height="9" rx="1.5" />
+        <rect x="3" y="16" width="7" height="5" rx="1.5" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24">
+        <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
+        <path d="M5 17l.9 2.1L8 20l-2.1.9L5 23l-.9-2.1L2 20l2.1-.9L5 17z" />
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      </symbol>
+      <symbol id="i-wand" viewBox="0 0 24 24">
+        <path d="M15 4V2" />
+        <path d="M15 16v-2" />
+        <path d="M8 9h2" />
+        <path d="M20 9h2" />
+        <path d="M17.8 11.8L19 13" />
+        <path d="M17.8 6.2L19 5" />
+        <path d="M3 21l9-9" />
+        <path d="M12.2 6.2L11 5" />
+      </symbol>
+      <symbol id="i-plug" viewBox="0 0 24 24">
+        <path d="M12 22v-5" />
+        <path d="M9 8V2" />
+        <path d="M15 8V2" />
+        <path d="M18 8v5a4 4 0 0 1-4 4h0a4 4 0 0 1-4-4V8Z" />
+      </symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24">
+        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+        <circle cx="12" cy="12" r="3" />
+      </symbol>
+      <symbol id="i-eye-off" viewBox="0 0 24 24">
+        <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+        <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+        <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+        <path d="M2 2l20 20" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="M4.93 4.93l1.41 1.41" />
+        <path d="M17.66 17.66l1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="M6.34 17.66l-1.41 1.41" />
+        <path d="M19.07 4.93l-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.08a2 2 0 0 1-2.83 2.83l-.08-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1 1.56V20a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 8.9 18.4a1.7 1.7 0 0 0-1.88.34l-.08.06a2 2 0 0 1-2.83-2.83l.06-.08A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.9a1.7 1.7 0 0 0-.34-1.88l-.06-.08a2 2 0 0 1 2.83-2.83l.08.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.56V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.88-.34l.08-.06a2 2 0 0 1 2.83 2.83l-.06.08A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1z" />
+      </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M15 3v18" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+      </symbol>
+      <symbol id="i-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24">
+        <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+        <path d="M15 5l4 4" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M3 6h18" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <path d="M8 6v14" />
+        <path d="M16 6v14" />
+      </symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <path d="M12 19v5" />
+      </symbol>
+      <symbol id="i-volume" viewBox="0 0 24 24">
+        <path d="M11 5L6 9H3v6h3l5 4V5z" />
+        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+      </symbol>
+      <symbol id="i-volume-off" viewBox="0 0 24 24">
+        <path d="M11 5L6 9H3v6h3l5 4V5z" />
+        <path d="M22 9l-6 6" />
+        <path d="M16 9l6 6" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="M22 2L11 13" />
+        <path d="M22 2l-7 20-4-9-9-4Z" />
+      </symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="16" height="16" rx="2" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect x="9" y="9" width="13" height="13" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+        <path d="M16 16h5v5" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="M18 6L6 18" />
+        <path d="M6 6l12 12" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="M20 6L9 17l-5-5" />
+      </symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24">
+        <path d="M9 18l6-6-6-6" />
+      </symbol>
+      <symbol id="i-chevron-left" viewBox="0 0 24 24">
+        <path d="M15 18l-6-6 6-6" />
+      </symbol>
+      <symbol id="i-message" viewBox="0 0 24 24">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+      </symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24">
+        <rect x="3" y="11" width="18" height="11" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </symbol>
+      <symbol id="i-grip" viewBox="0 0 24 24">
+        <circle cx="9" cy="5" r="1" />
+        <circle cx="9" cy="12" r="1" />
+        <circle cx="9" cy="19" r="1" />
+        <circle cx="15" cy="5" r="1" />
+        <circle cx="15" cy="12" r="1" />
+        <circle cx="15" cy="19" r="1" />
+      </symbol>
+      <symbol id="i-hand" viewBox="0 0 24 24">
+        <path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2" />
+        <path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2" />
+        <path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2" />
+        <path d="M18 8a2 2 0 0 1 2 2v5a7 7 0 0 1-7 7h-2a7 7 0 0 1-7-7v-1a2 2 0 0 1 4 0" />
+        <path d="M18 11a2 2 0 0 1 2 2" />
+      </symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24">
+        <path d="M12 5v14" />
+        <path d="M19 12l-7 7-7-7" />
+      </symbol>
+      <symbol id="i-music" viewBox="0 0 24 24">
+        <path d="M9 18V5l12-2v13" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="16" r="3" />
+      </symbol>
+      <symbol id="i-flame" viewBox="0 0 24 24">
+        <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+      </symbol>
+      <symbol id="i-bow" viewBox="0 0 24 24">
+        <path d="M4 7l7 5-7 5V7z" />
+        <path d="M20 7l-7 5 7 5V7z" />
+        <circle cx="12" cy="12" r="2.4" />
+      </symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="nav-rail" aria-label="全局导航">
+        <div class="nav-brand" title="bowknot workbench">
+          <span class="nav-brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-bow"></use></svg></span>
+          <span class="nav-brand-word">bowknot</span>
+        </div>
+        <nav class="nav-items">
+          <button class="nav-item" type="button" data-nav="workbench" aria-label="工作台">
+            <svg class="icon" aria-hidden="true"><use href="#i-dashboard"></use></svg>
+            <span>工作台</span>
+          </button>
+          <button class="nav-item" type="button" data-nav="apps" aria-label="Apps">
+            <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
+            <span>Apps</span>
+          </button>
+          <button class="nav-item is-active" type="button" data-nav="assistant" aria-current="page" aria-label="助手">
+            <svg class="icon" aria-hidden="true"><use href="#i-sparkles"></use></svg>
+            <span>助手</span>
+          </button>
+          <button class="nav-item" type="button" data-nav="agents" aria-label="Agents">
+            <svg class="icon" aria-hidden="true"><use href="#i-users"></use></svg>
+            <span>Agents</span>
+          </button>
+          <button class="nav-item" type="button" data-nav="aigc" aria-label="AIGC">
+            <svg class="icon" aria-hidden="true"><use href="#i-wand"></use></svg>
+            <span>AIGC</span>
+          </button>
+          <button class="nav-item" type="button" data-nav="plugins" aria-label="插件">
+            <svg class="icon" aria-hidden="true"><use href="#i-plug"></use></svg>
+            <span>插件</span>
+          </button>
+        </nav>
+        <div class="nav-foot">
+          <span class="nav-foot-dot"></span>
+          <span>本地运行</span>
+        </div>
+      </aside>
+
+      <header class="top-bar">
+        <div class="top-context">
+          <span class="top-eyebrow">bowknot / workbench</span>
+          <span class="top-divider"></span>
+          <span class="top-title">助手</span>
+        </div>
+        <div class="top-actions">
+          <button id="toggleAvatarBtn" class="top-action is-on" type="button" aria-pressed="true" title="显示 / 隐藏主 Agent 形象">
+            <svg class="icon" aria-hidden="true"><use href="#i-eye"></use></svg>
+            <span>形象</span>
+          </button>
+          <button id="themeBtn" class="icon-btn" type="button" title="切换明暗主题" aria-label="切换明暗主题">
+            <svg class="icon" aria-hidden="true"><use href="#i-moon"></use></svg>
+          </button>
+          <button id="settingsBtn" class="icon-btn" type="button" title="助手设置" aria-label="助手设置">
+            <svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg>
+          </button>
+          <button class="user-avatar" type="button" title="未" aria-label="当前用户">未</button>
+        </div>
+      </header>
+
+      <main class="assistant-layout" id="assistantLayout">
+        <section class="chat-column" aria-label="与小蝶的对话">
+          <header class="chat-header">
+            <div class="agent-identity">
+              <span class="agent-mini" aria-hidden="true">
+                <svg class="icon" aria-hidden="true"><use href="#i-bow"></use></svg>
+              </span>
+              <div class="agent-meta">
+                <h1>小蝶 <span class="presence-dot" aria-hidden="true"></span></h1>
+                <p id="agentStatusText">在线 · 主 Agent</p>
+              </div>
+            </div>
+            <div class="chat-actions">
+              <button id="togglePanelBtn" class="icon-btn" type="button" title="收起会话面板" aria-label="收起会话面板">
+                <svg class="icon" aria-hidden="true"><use href="#i-panel"></use></svg>
+              </button>
+              <button id="chatSettingsBtn" class="icon-btn" type="button" title="助手设置" aria-label="助手设置">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="chat-body">
+            <div class="chat-atmosphere" aria-hidden="true"></div>
+            <div id="messageList" class="message-list" role="log" aria-live="polite" aria-label="消息列表"></div>
+            <button id="scrollBottomBtn" class="scroll-bottom" type="button" hidden>
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow-down"></use></svg>
+              回到底部
+            </button>
+          </div>
+
+          <div class="composer-wrap">
+            <div id="inlineVoice" class="inline-voice" hidden>
+              <span class="recording-dot" aria-hidden="true"></span>
+              <span id="inlineVoiceText">正在聆听…</span>
+              <div class="voice-wave" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span>
+              </div>
+              <span class="inline-voice-hint">上滑取消</span>
+            </div>
+            <div class="composer" id="composer">
+              <textarea
+                id="composerInput"
+                rows="1"
+                placeholder="和小蝶说点什么…"
+                aria-label="消息输入"
+                maxlength="2000"
+              ></textarea>
+              <div class="composer-tools">
+                <div class="composer-left">
+                  <button id="micBtn" class="icon-btn" type="button" title="按住说话" aria-label="按住说话">
+                    <svg class="icon" aria-hidden="true"><use href="#i-mic"></use></svg>
+                  </button>
+                  <button id="ttsBtn" class="icon-btn is-on" type="button" title="语音播报" aria-label="语音播报" aria-pressed="true">
+                    <svg class="icon" aria-hidden="true"><use href="#i-volume"></use></svg>
+                  </button>
+                  <span class="shortcut-hint"><kbd>Ctrl</kbd><span>+</span><kbd>Space</kbd><span>全局语音</span></span>
+                </div>
+                <div class="composer-right">
+                  <span class="send-hint" id="sendHint">Enter 发送</span>
+                  <button id="sendBtn" class="send-btn" type="button" aria-label="发送消息" title="发送">
+                    <svg class="icon" aria-hidden="true"><use href="#i-send"></use></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="session-panel" id="sessionPanel" aria-label="会话管理">
+          <header class="session-header">
+            <div class="session-heading">
+              <span class="session-eyebrow">对话</span>
+              <h2>会话</h2>
+            </div>
+            <div class="session-header-actions">
+              <button id="newSessionBtn" class="icon-btn" type="button" title="新会话" aria-label="新会话">
+                <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+              </button>
+              <button id="collapsePanelBtn" class="icon-btn" type="button" title="收起会话面板" aria-label="收起会话面板">
+                <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+              </button>
+            </div>
+          </header>
+          <div id="sessionList" class="session-list" role="listbox" aria-label="会话列表"></div>
+          <footer class="session-footer">
+            <svg class="icon" aria-hidden="true"><use href="#i-lock"></use></svg>
+            <span>本地保存 · 仅此设备</span>
+          </footer>
+        </aside>
+        <button id="openPanelBtn" class="panel-handle" type="button" title="展开会话面板" aria-label="展开会话面板" hidden>
+          <svg class="icon" aria-hidden="true"><use href="#i-panel"></use></svg>
+          <span>会话</span>
+        </button>
+      </main>
+    </div>
+
+    <!-- 全局悬浮形象卡片：纯透明、可拖拽，不属于助手页布局 -->
+    <div id="agentCard" class="agent-card" aria-label="主 Agent 小蝶的形象">
+      <div class="agent-card-glow" aria-hidden="true"></div>
+      <div id="agentDragArea" class="agent-drag-area" title="拖动小蝶">
+        <svg id="mascot" class="mascot" viewBox="0 0 220 300" data-mood="neutral" aria-label="小蝶">
+          <defs>
+            <linearGradient id="hairGradient" x1="0" y1="0" x2="0.6" y2="1">
+              <stop offset="0" stop-color="#4a322b" />
+              <stop offset="1" stop-color="#2e1f1a" />
+            </linearGradient>
+            <linearGradient id="dressGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#fffaf1" />
+              <stop offset="1" stop-color="#f6e8d6" />
+            </linearGradient>
+            <linearGradient id="bowGradient" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ff7a3d" />
+              <stop offset="1" stop-color="#e23f07" />
+            </linearGradient>
+          </defs>
+
+          <ellipse class="mascot-shadow" cx="110" cy="287" rx="55" ry="9" />
+
+          <g class="mascot-body">
+            <g class="legs">
+              <rect x="91" y="244" width="13" height="33" rx="6.5" fill="#f3cdb8" />
+              <rect x="116" y="244" width="13" height="33" rx="6.5" fill="#f3cdb8" />
+              <ellipse cx="96" cy="279" rx="14" ry="7" fill="#6b4a3a" />
+              <ellipse cx="124" cy="279" rx="14" ry="7" fill="#6b4a3a" />
+            </g>
+
+            <g class="arms">
+              <g class="arm arm-left">
+                <path d="M84 168 Q70 196 68 222 Q67 232 76 233 Q85 233 87 223 Q91 199 99 176 Z" fill="#f3cdb8" />
+                <circle cx="77" cy="232" r="9" fill="#f7d6c4" />
+                <ellipse cx="84" cy="174" rx="12" ry="10" fill="#fffaf1" />
+              </g>
+              <g class="arm arm-right">
+                <path d="M136 168 Q150 196 152 222 Q153 232 144 233 Q135 233 133 223 Q129 199 121 176 Z" fill="#f3cdb8" />
+                <circle cx="143" cy="232" r="9" fill="#f7d6c4" />
+                <ellipse cx="136" cy="174" rx="12" ry="10" fill="#fffaf1" />
+              </g>
+            </g>
+
+            <path class="dress" d="M80 164 Q110 177 140 164 L156 252 Q110 266 64 252 Z" fill="url(#dressGradient)" />
+            <path d="M82 245 Q110 258 138 245 L141 252 Q110 266 79 252 Z" fill="#fb5215" opacity="0.86" />
+            <path class="dress-ribbon" d="M88 204 Q110 214 132 204 L132 216 Q110 226 88 216 Z" fill="#fb5215" />
+            <circle cx="110" cy="214" r="4.4" fill="#ffd9c7" />
+            <path d="M94 165 Q110 174 126 165" stroke="#e8d4bf" stroke-width="2" fill="none" />
+            <path d="M104 158h12v12h-12z" fill="#f3cdb8" />
+
+            <g class="head">
+              <ellipse cx="110" cy="94" rx="61" ry="62" fill="url(#hairGradient)" />
+              <ellipse cx="110" cy="106" rx="48" ry="50" fill="#f7d6c4" />
+              <ellipse cx="110" cy="118" rx="45" ry="37" fill="#fbe3d3" opacity="0.55" />
+              <path class="side-lock side-lock-left" d="M65 82 Q55 116 66 150 Q74 160 82 148 Q73 116 76 86 Z" fill="#3a2721" />
+              <path class="side-lock side-lock-right" d="M155 82 Q165 116 154 150 Q146 160 138 148 Q147 116 144 86 Z" fill="#3a2721" />
+              <path class="bangs" d="M62 98 C62 56 84 36 110 36 C140 36 160 60 159 98 C150 82 141 70 132 66 C126 84 116 89 107 80 C97 93 86 91 77 82 C71 90 67 96 62 98 Z" fill="url(#hairGradient)" />
+              <path d="M83 55 Q95 43 108 44" stroke="#876350" stroke-width="3" fill="none" opacity="0.5" />
+              <path d="M126 45 Q140 47 148 57" stroke="#876350" stroke-width="2.4" fill="none" opacity="0.4" />
+              <path class="ahoge" d="M113 38 Q122 18 137 24 Q130 30 124 36" fill="#4a322b" />
+
+              <g class="brows">
+                <path class="brow brow-left" d="M80 99 Q90 94 100 98" stroke="#4a322b" stroke-width="2.2" fill="none" />
+                <path class="brow brow-right" d="M120 98 Q130 94 140 99" stroke="#4a322b" stroke-width="2.2" fill="none" />
+              </g>
+
+              <g class="eyes eyes-open">
+                <ellipse cx="90" cy="110" rx="6.6" ry="9.4" fill="#2a1b16" />
+                <ellipse cx="130" cy="110" rx="6.6" ry="9.4" fill="#2a1b16" />
+                <circle cx="92" cy="107" r="2.2" fill="#fffaf1" />
+                <circle cx="132" cy="107" r="2.2" fill="#fffaf1" />
+              </g>
+              <g class="eyes eyes-happy">
+                <path d="M82 112 Q90 103 98 112" stroke="#2a1b16" stroke-width="2.8" fill="none" />
+                <path d="M122 112 Q130 103 138 112" stroke="#2a1b16" stroke-width="2.8" fill="none" />
+              </g>
+              <g class="eyes eyes-shy">
+                <path d="M83 113 Q90 119 97 113" stroke="#2a1b16" stroke-width="2.4" fill="none" />
+                <path d="M123 113 Q130 119 137 113" stroke="#2a1b16" stroke-width="2.4" fill="none" />
+              </g>
+              <g class="eyes eyes-sad">
+                <path d="M83 111 Q90 116 97 111" stroke="#2a1b16" stroke-width="2.4" fill="none" />
+                <path d="M123 111 Q130 116 137 111" stroke="#2a1b16" stroke-width="2.4" fill="none" />
+              </g>
+              <g class="eyes eyes-surprised">
+                <ellipse cx="90" cy="110" rx="8" ry="11" fill="#2a1b16" />
+                <ellipse cx="130" cy="110" rx="8" ry="11" fill="#2a1b16" />
+                <circle cx="92.5" cy="106" r="2.6" fill="#fffaf1" />
+                <circle cx="132.5" cy="106" r="2.6" fill="#fffaf1" />
+              </g>
+
+              <g class="blush">
+                <ellipse class="blush-left" cx="76" cy="125" rx="10" ry="5" fill="#f38a76" opacity="0.28" />
+                <ellipse class="blush-right" cx="144" cy="125" rx="10" ry="5" fill="#f38a76" opacity="0.28" />
+              </g>
+
+              <g class="mouths">
+                <path class="mouth mouth-neutral" d="M102 133 Q110 139 118 133" stroke="#6b3a2e" stroke-width="2" fill="none" />
+                <path class="mouth mouth-happy" d="M100 131 Q110 143 120 131" stroke="#6b3a2e" stroke-width="2.4" fill="none" />
+                <ellipse class="mouth mouth-shy" cx="110" cy="135" rx="4.2" ry="2.6" fill="#8f4d3e" />
+                <path class="mouth mouth-angry" d="M103 137 Q110 132 117 137" stroke="#6b3a2e" stroke-width="2.2" fill="none" />
+                <path class="mouth mouth-sad" d="M102 137 Q110 131 118 137" stroke="#6b3a2e" stroke-width="2.2" fill="none" />
+                <ellipse class="mouth mouth-surprised" cx="110" cy="136" rx="5.2" ry="7" fill="#7d3e32" />
+              </g>
+            </g>
+
+            <g class="head-bow" transform="translate(151 59) rotate(12)">
+              <path d="M0 0 C-17 -13 -27 0 -12 11 Z" fill="url(#bowGradient)" />
+              <path d="M0 0 C17 -13 27 0 12 11 Z" fill="url(#bowGradient)" />
+              <ellipse cx="0" cy="4" rx="6.2" ry="7.4" fill="#d83b06" />
+              <circle cx="-2" cy="2" r="1.8" fill="#ffb18b" opacity="0.7" />
+            </g>
+          </g>
+
+          <ellipse class="hit hit-face" data-hit="face" cx="110" cy="120" rx="34" ry="28" fill="transparent" />
+          <ellipse class="hit hit-head" data-hit="head" cx="110" cy="66" rx="48" ry="26" fill="transparent" />
+        </svg>
+
+        <div id="agentCardStatus" class="agent-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="agentStatusLabel">待机 · 在线</span>
+        </div>
+
+        <div id="agentToolbar" class="agent-toolbar" role="toolbar" aria-label="形象互动">
+          <button class="tool-btn" type="button" data-action="wave" title="挥手" aria-label="挥手">
+            <svg class="icon" aria-hidden="true"><use href="#i-hand"></use></svg>
+          </button>
+          <button class="tool-btn" type="button" data-action="nod" title="点头" aria-label="点头">
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow-down"></use></svg>
+          </button>
+          <button class="tool-btn" type="button" data-action="dance" title="跳舞" aria-label="跳舞">
+            <svg class="icon" aria-hidden="true"><use href="#i-music"></use></svg>
+          </button>
+          <button class="tool-btn" type="button" data-action="angry" title="生气" aria-label="生气">
+            <svg class="icon" aria-hidden="true"><use href="#i-flame"></use></svg>
+          </button>
+          <button class="tool-btn" type="button" data-action="hide" title="隐藏形象" aria-label="隐藏形象">
+            <svg class="icon" aria-hidden="true"><use href="#i-eye-off"></use></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="globalVoice" class="global-voice" hidden role="status">
+      <div class="gv-wave" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="gv-copy">
+        <strong id="globalVoiceTitle">正在聆听</strong>
+        <span id="globalVoiceHint">松开 Ctrl + Space 发送</span>
+      </div>
+      <button id="cancelGlobalVoice" class="icon-btn gv-cancel" type="button" title="取消" aria-label="取消语音输入">
+        <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+      </button>
+    </div>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+    <div id="modalLayer" class="modal-layer" hidden>
+      <div class="modal-backdrop" data-close-modal></div>
+
+      <div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
+        <header class="modal-header">
+          <div>
+            <span class="modal-eyebrow">Assistant preferences</span>
+            <h3 id="settingsTitle">助手设置</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-modal aria-label="关闭设置">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <section class="setting-group">
+            <label class="setting-label">主 Agent 模型</label>
+            <div class="segmented" id="modelSegment" role="radiogroup" aria-label="主 Agent 模型">
+              <button type="button" data-model="小蝶 · 轻量" role="radio">轻量</button>
+              <button type="button" data-model="小蝶 · 标准" role="radio">标准</button>
+              <button type="button" data-model="小蝶 · 深度" role="radio">深度</button>
+            </div>
+            <p class="setting-note">模型仅影响回复风格与速度，原型内均为本地演示数据。</p>
+          </section>
+
+          <section class="setting-group">
+            <div class="switch-row">
+              <div><strong>语音播报</strong><span>回复后自动朗读</span></div>
+              <button class="switch is-on" type="button" data-setting="tts" role="switch" aria-checked="true" aria-label="语音播报"></button>
+            </div>
+            <div class="switch-row">
+              <div><strong>语音输入</strong><span>显示输入区麦克风</span></div>
+              <button class="switch is-on" type="button" data-setting="voiceInput" role="switch" aria-checked="true" aria-label="语音输入"></button>
+            </div>
+            <div class="switch-row">
+              <div><strong>悬浮形象</strong><span>全局显示主 Agent 卡片</span></div>
+              <button class="switch is-on" type="button" data-setting="cardVisible" role="switch" aria-checked="true" aria-label="悬浮形象"></button>
+            </div>
+            <div class="switch-row">
+              <div><strong>记忆写入提示</strong><span>在消息底部显示“已记住”</span></div>
+              <button class="switch is-on" type="button" data-setting="memoryHints" role="switch" aria-checked="true" aria-label="记忆写入提示"></button>
+            </div>
+            <div class="switch-row">
+              <div><strong>减少动态效果</strong><span>降低动作与过渡</span></div>
+              <button class="switch" type="button" data-setting="reducedMotion" role="switch" aria-checked="false" aria-label="减少动态效果"></button>
+            </div>
+          </section>
+
+          <section class="setting-group">
+            <label class="setting-label">全局语音快捷键</label>
+            <div class="shortcut-row">
+              <kbd>Ctrl</kbd><span>+</span><kbd>Space</kbd>
+              <span class="shortcut-note">输入框内输入法组合时自动让位</span>
+            </div>
+          </section>
+        </div>
+        <footer class="modal-footer">
+          <button id="resetDemoBtn" class="text-btn danger" type="button">重置演示数据</button>
+          <button class="primary-btn" type="button" data-close-modal>完成</button>
+        </footer>
+      </div>
+
+      <div id="confirmModal" class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
+        <header class="modal-header">
+          <div>
+            <span class="modal-eyebrow">Please confirm</span>
+            <h3 id="confirmTitle">删除会话</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-modal aria-label="关闭确认框">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <p id="confirmMessage" class="confirm-message">删除后将无法恢复，确定继续吗？</p>
+        </div>
+        <footer class="modal-footer">
+          <button class="text-btn" type="button" data-close-modal>取消</button>
+          <button id="confirmActionBtn" class="primary-btn danger-btn" type="button">删除</button>
+        </footer>
+      </div>
+    </div>
+
+    <script src="./mock.js"></script>
+    <script src="./api.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
