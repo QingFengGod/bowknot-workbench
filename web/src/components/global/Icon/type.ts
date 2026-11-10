@@ -15,6 +15,7 @@ type IconSets = {
     | 'pen'
     | 'trash'
     | 'message'
+    | 'folder-plus'
   'game-icons': 'bow-tie-ribbon'
   'line-md': 'moon-loop' | 'sunny-loop' | 'computer' | 'menu-fold-left'
   'park-outline': 'workbench'

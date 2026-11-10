@@ -15,6 +15,8 @@
   "dependencies": {
     "@bowknot/utils": "catalog:",
     "antdv-next": "catalog:",
+    "dompurify": "catalog:",
+    "markdown-it": "catalog:",
     "pinia": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:"

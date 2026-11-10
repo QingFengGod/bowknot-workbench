@@ -27,6 +27,10 @@ bowknot-workbench 是一个本地优先的 AI 助理与多 Agent 协作工作台
    - 组件内编写 scoped CSS 时优先使用 `@apply` 组合主题工具类，例如 `@apply bk-bg-container bk-shadow b-l-1;`，不要手写 `background` / `box-shadow` / `border` 等主题声明
    - 多个 class 的组合如果重复出现或语义明确，抽成 `web/uno.config.ts` 的 `shortcuts`
    - 只在需要复杂选择器、伪元素、动画、渐变或第三方组件覆盖时写原生 scoped CSS
+4. **新增依赖须先确认，并由用户安装**
+   - 引入任何新依赖前，先说明包名、用途、体积与可替代方案，得到用户明确同意后再修改依赖声明
+   - 依赖安装与 lockfile 更新由用户执行（`bun install` / `bun add`），代理不得自行运行安装命令
+   - 安装完成前不假设依赖可用，不因缺少依赖而擅自更换实现方案
 
 ## 3. 目录约定
 

@@ -6,6 +6,8 @@ export type ConversationItem = {
   summary?: string
   /** 更新时间，支持时间戳、日期字符串或 Date */
   updatedAt?: number | string | Date
+  /** 是否置顶，置顶会话固定在最上方 */
+  pinned?: boolean
 }
 
 export type ConversationsProps = {

@@ -9,7 +9,7 @@
         返回首页
       </AButton>
       <AButton @click="$router.back()">
-        <template #icon><BkIcon name="prime-chevron-right" rotate="180deg" /></template>
+        <template #icon><BkIcon name="prime-chevron-right" :rotate="180" /></template>
         返回上一页
       </AButton>
     </BkFlex>

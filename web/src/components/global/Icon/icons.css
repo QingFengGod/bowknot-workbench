@@ -26,23 +26,18 @@
 .i-prime-th-large {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M9 11.25H6A2.25 2.25 0 0 1 3.75 9V6A2.25 2.25 0 0 1 6 3.75h3A2.25 2.25 0 0 1 11.25 6v3A2.25 2.25 0 0 1 9 11.25m-3-6a.76.76 0 0 0-.75.75v3a.76.76 0 0 0 .75.75h3A.76.76 0 0 0 9.75 9V6A.76.76 0 0 0 9 5.25Zm3 15H6A2.25 2.25 0 0 1 3.75 18v-3A2.25 2.25 0 0 1 6 12.75h3A2.25 2.25 0 0 1 11.25 15v3A2.25 2.25 0 0 1 9 20.25m-3-6a.76.76 0 0 0-.75.75v3a.76.76 0 0 0 .75.75h3a.76.76 0 0 0 .75-.75v-3a.76.76 0 0 0-.75-.75Zm12-3h-3A2.25 2.25 0 0 1 12.75 9V6A2.25 2.25 0 0 1 15 3.75h3A2.25 2.25 0 0 1 20.25 6v3A2.25 2.25 0 0 1 18 11.25m-3-6a.76.76 0 0 0-.75.75v3a.76.76 0 0 0 .75.75h3a.76.76 0 0 0 .75-.75V6a.76.76 0 0 0-.75-.75Zm3 15h-3A2.25 2.25 0 0 1 12.75 18v-3A2.25 2.25 0 0 1 15 12.75h3A2.25 2.25 0 0 1 20.25 15v3A2.25 2.25 0 0 1 18 20.25m-3-6a.76.76 0 0 0-.75.75v3a.76.76 0 0 0 .75.75h3a.76.76 0 0 0 .75-.75v-3a.76.76 0 0 0-.75-.75Z'/%3E%3C/svg%3E");
 }
-
 .i-prime-home {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M20 11.75a.74.74 0 0 1-.45-.15L12 5.94L4.45 11.6a.75.75 0 0 1-.9-1.2l8-6a.75.75 0 0 1 .9 0l8 6a.75.75 0 0 1 .15 1a.74.74 0 0 1-.6.35'/%3E%3Cpath fill='black' d='M18 19.75H6a.76.76 0 0 1-.75-.75V9.5a.75.75 0 0 1 1.5 0v8.75h10.5V9.5a.75.75 0 0 1 1.5 0V19a.76.76 0 0 1-.75.75'/%3E%3Cpath fill='black' d='M14 19.75a.76.76 0 0 1-.75-.75v-6.25h-2.5V19a.75.75 0 0 1-1.5 0v-7a.76.76 0 0 1 .75-.75h4a.76.76 0 0 1 .75.75v7a.76.76 0 0 1-.75.75'/%3E%3C/svg%3E");
 }
-
 .i-prime-chevron-right {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M10 17.75a.74.74 0 0 1-.53-.22a.75.75 0 0 1 0-1.06L13.94 12L9.47 7.53a.75.75 0 0 1 1.06-1.06l5 5a.75.75 0 0 1 0 1.06l-5 5a.74.74 0 0 1-.53.22'/%3E%3C/svg%3E");
 }
-
 .i-prime-gift {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M19.5 7.75h-1.4c.4-.48.65-1.08.65-1.75c0-1.52-1.23-2.75-2.75-2.75c-1.68 0-3.16.89-4 2.21a4.75 4.75 0 0 0-4-2.21C6.48 3.25 5.25 4.48 5.25 6c0 .67.25 1.27.65 1.75H4.5c-.69 0-1.25.56-1.25 1.25v2.5c0 .6.43 1.08 1 1.2v6.8c0 .69.56 1.25 1.25 1.25h13c.69 0 1.25-.56 1.25-1.25v-6.8c.57-.12 1-.6 1-1.2V9c0-.69-.56-1.25-1.25-1.25m-.25 3.5h-6.5v-2h6.5zM16 4.75a1.25 1.25 0 0 1 0 2.5h-3.16c.34-1.43 1.63-2.5 3.16-2.5m-8 0c1.53 0 2.82 1.07 3.16 2.5H8a1.25 1.25 0 0 1 0-2.5m-3.25 4.5h6.5v2h-6.5zm1 3.5h5.5v6.5h-5.5zm12.5 6.5h-5.5v-6.5h5.5z'/%3E%3C/svg%3E");
 }
-
 .i-prime-share-alt {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M17.5 14.25a3.24 3.24 0 0 0-2.62 1.35L9.59 13a3.4 3.4 0 0 0 .16-1a3.4 3.4 0 0 0-.16-1l5.29-2.6a3.23 3.23 0 1 0-.63-1.9a3 3 0 0 0 .05.5L8.83 9.75a3.2 3.2 0 0 0-2.33-1a3.25 3.25 0 0 0 0 6.5a3.2 3.2 0 0 0 2.33-1L14.3 17a3 3 0 0 0-.05.51a3.25 3.25 0 1 0 3.25-3.25Zm0-9.5a1.75 1.75 0 1 1-1.75 1.75a1.76 1.76 0 0 1 1.75-1.75m-11 9A1.75 1.75 0 1 1 8.25 12a1.76 1.76 0 0 1-1.75 1.75m11 5.5a1.75 1.75 0 1 1 1.75-1.75a1.76 1.76 0 0 1-1.75 1.75'/%3E%3C/svg%3E");
 }
-
 .i-prime-sparkles {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='m18.892 5.297l1.254.418a.3.3 0 0 1 0 .57l-1.254.418a.3.3 0 0 0-.19.19l-.417 1.253a.3.3 0 0 1-.57 0l-.418-1.254a.3.3 0 0 0-.19-.19l-1.253-.417a.3.3 0 0 1 0-.57l1.254-.418a.3.3 0 0 0 .19-.19l.417-1.253a.3.3 0 0 1 .57 0l.418 1.254c.03.09.1.16.19.19m-9.698-.25c.258-.775 1.354-.774 1.612 0l1.537 4.61l4.61 1.537c.774.258.774 1.354 0 1.612l-4.61 1.537l-1.537 4.61c-.258.774-1.354.774-1.612 0l-1.537-4.61l-4.61-1.537c-.775-.258-.775-1.354 0-1.612l4.61-1.537zM10 7.372L8.977 10.44a.85.85 0 0 1-.537.537L5.372 12l3.068 1.023a.85.85 0 0 1 .537.537L10 16.628l1.023-3.068a.85.85 0 0 1 .537-.537L14.628 12l-3.068-1.023a.85.85 0 0 1-.537-.537zm10.146 10.343l-1.254-.418a.3.3 0 0 1-.19-.19l-.417-1.253a.3.3 0 0 0-.57 0l-.418 1.254a.3.3 0 0 1-.19.19l-1.253.417a.3.3 0 0 0 0 .57l1.254.418c.09.03.16.1.19.19l.417 1.253a.3.3 0 0 0 .57 0l.418-1.254a.3.3 0 0 1 .19-.19l1.253-.417a.3.3 0 0 0 0-.57' clip-rule='evenodd'/%3E%3C/svg%3E");
 }
@@ -52,21 +47,20 @@
 .i-prime-ellipsis-v {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='1.75' fill='black'/%3E%3Ccircle cx='12' cy='5' r='1.75' fill='black'/%3E%3Ccircle cx='12' cy='19' r='1.75' fill='black'/%3E%3C/svg%3E");
 }
-
 .i-prime-plus {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-linecap='round' stroke-width='2'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/g%3E%3C/svg%3E");
 }
-
 .i-prime-pen {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Cpath d='M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5L2 22l1.5-5.5L17 3z'/%3E%3C/g%3E%3C/svg%3E");
 }
-
 .i-prime-trash {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3Cpath d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3Cpath d='M10 11v6M14 11v6'/%3E%3C/g%3E%3C/svg%3E");
 }
-
 .i-prime-message {
   --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/g%3E%3C/svg%3E");
+}
+.i-prime-folder-plus {
+  --icon-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M5.25 7.5c0-.686.564-1.25 1.25-1.25h2.155l2.776 3.238A.75.75 0 0 0 12 9.75h5.5c.686 0 1.25.564 1.25 1.25v5.5c0 .686-.564 1.25-1.25 1.25h-11c-.686 0-1.25-.564-1.25-1.25zM6.5 4.75A2.756 2.756 0 0 0 3.75 7.5v9a2.756 2.756 0 0 0 2.75 2.75h11a2.756 2.756 0 0 0 2.75-2.75V11a2.756 2.756 0 0 0-2.75-2.75h-5.155L9.569 5.012A.75.75 0 0 0 9 4.75zm5.5 6a.75.75 0 0 1 .75.75v1.25H14a.75.75 0 0 1 0 1.5h-1.25v1.25a.75.75 0 0 1-1.5 0v-1.25H10a.75.75 0 0 1 0-1.5h1.25V11.5a.75.75 0 0 1 .75-.75' clip-rule='evenodd'/%3E%3C/svg%3E");
 }
 
 .i-game-icons-bow-tie-ribbon {
