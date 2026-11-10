@@ -1,7 +1,6 @@
 @import './reset.css';
 @import './transition.css';
 @import './animate.css';
-@import './icons.css';
 
 ::view-transition-old(root),
 ::view-transition-new(root) {

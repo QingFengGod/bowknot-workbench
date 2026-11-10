@@ -29,6 +29,7 @@ export type IconName = {
 export type IconProps = {
   name: IconName
   color?: string
-  size?: string
+  size?: string | [string, string]
   rotate?: number
+  containerSize?: string | [string, string]
 }

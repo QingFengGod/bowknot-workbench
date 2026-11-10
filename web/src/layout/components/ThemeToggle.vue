@@ -14,9 +14,7 @@
         <span>{{ item.label }}</span>
       </BkFlex>
     </template>
-    <div class="cursor-pointer w-24px h-24px" title="切换主题">
-      <BkIcon :name="activeItem.icon" />
-    </div>
+    <BkIcon class="bk-rd-xs hover:bk-bg-fill" :name="activeItem.icon" container-size="30px" />
   </APopover>
 </template>
 

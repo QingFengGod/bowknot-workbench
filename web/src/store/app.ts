@@ -30,7 +30,11 @@ export const useAppStore = defineStore('app', {
       lightToken: {
         colorPrimary: '#fb5215',
         colorSplit: '#e3e6ec',
-        boxShadow: '0 0 6px rgba(0, 0, 0, 0.2)'
+        boxShadow: '0 0 6px rgba(0, 0, 0, 0.2)',
+        borderRadiusXS: 4,
+        borderRadiusSM: 8,
+        borderRadius: 12,
+        borderRadiusLG: 16
       },
       darkToken: {
         colorSplit: '#414243',

@@ -36,9 +36,9 @@
 </template>
 
 <script setup lang="ts">
-import type { ConversationItem } from '@/components/global/Conversations/type'
 import { computed, reactive } from 'vue'
 import Conversations from '@/components/global/Conversations/Conversations.vue'
+import type { ConversationItem } from '@/components'
 
 defineOptions({ name: 'AssistantPage' })
 
@@ -59,30 +59,35 @@ const state = reactive<PageState>({
   sessions: [
     {
       id: 'daily',
+      group: '日常',
       title: '日常',
       summary: '今天的安排已经整理好了，晚上记得早点休息。',
       updatedAt: now - 2 * MINUTE
     },
     {
       id: 'work',
+      group: '工作',
       title: '工作讨论',
       summary: '周报要点分三块：本周进展、风险与下周计划。',
       updatedAt: now - 36 * MINUTE
     },
     {
       id: 'travel',
+      group: '日常',
       title: '旅行计划',
       summary: '杭州三天两晚，按西湖、灵隐、龙井的顺序排好了。',
       updatedAt: now - 5 * HOUR
     },
     {
       id: 'reading',
+      group: '工作',
       title: '读书笔记',
       summary: '把《禅与摩托车维修艺术》的摘录按章节归档了。',
       updatedAt: now - (DAY + 3 * HOUR)
     },
     {
       id: 'fitness',
+      group: '身体健康',
       title: '健身打卡',
       summary: '本周完成 3 次力量训练，下一次建议练背。',
       updatedAt: now - 3 * DAY
@@ -161,12 +166,6 @@ const onSelect = (item: ConversationItem) => {
 const onCreate = () => {
   const date = new Date()
   const id = Date.now().toString(36)
-  state.sessions.unshift({
-    id,
-    title: `新会话 ${date.getMonth() + 1}/${date.getDate()}`,
-    summary: '还没有消息',
-    updatedAt: Date.now()
-  })
   state.activeId = id
 }
 

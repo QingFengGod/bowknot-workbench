@@ -1,6 +1,7 @@
 export type ConversationItem = {
   id: string
   title: string
+  group?: string
   /** 最后一条消息摘要 */
   summary?: string
   /** 更新时间，支持时间戳、日期字符串或 Date */
@@ -8,7 +9,7 @@ export type ConversationItem = {
 }
 
 export type ConversationsProps = {
-  items?: ConversationItem[]
+  items: ConversationItem[]
   activeId?: string
   loading?: boolean
   title?: string

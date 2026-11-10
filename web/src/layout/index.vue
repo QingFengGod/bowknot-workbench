@@ -16,7 +16,7 @@
 
     <BkCell area="1/3/2/4" class="bk-bg-container b-b-1 bk-px-sm" flex align="center" justify="space-between">
       <BkFlex>
-        <BkIcon name="line-md-menu-fold-left"></BkIcon>
+        <BkIcon class="bk-rd-xs hover:bk-bg-fill" name="line-md-menu-fold-left" container-size="30px"></BkIcon>
       </BkFlex>
       <BkFlex justify="flex-end" align="center">
         <ThemeToggle />
