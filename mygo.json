@@ -1,0 +1,8 @@
+{
+  "name": "Bowknot Workbench",
+  "slug": "bowknot-workbench",
+  "identifier": "com.bowknot.workbench",
+  "version": "0.0.1",
+  "main": "./cmd/desktop",
+  "out": "build"
+}

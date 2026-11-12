@@ -1,24 +1,51 @@
-# bowknot-workbench
+# Bowknot Workbench
 
-To install dependencies:
+本地优先的 AI 助理与多 Agent 协作工作台，基于 [mygo](https://github.com/egoist/mygo) 构建的原生 Go 桌面应用。
 
-```bash
-bun install
+## 产品定位
+
+- **主 Agent（助理）**：用户的贴身助理，具备虚拟形象与人设，可对话、可执行任务
+- **Agents**：按需创建不同人设的动态 Agent，可单独对话，也可拉群协作，群聊由主 Agent 负责任务派发与汇报
+- **长期记忆**：每个 Agent（含主 Agent）都有人设与记忆系统
+- **插件**：独立模块，支持从本地或远程安装，按 Agent 配置可用范围
+- **Apps**：应用管理，支持安装、能力开关与数据清理
+- **AIGC**：生成中心、素材、角色、剧本与提示词等创作能力
+
+## 技术栈
+
+- Go 1.27+
+- [mygo](https://github.com/egoist/mygo) v0.9.0 原生 UI（立即模式，无 WebView）
+- UI 与后端分离：`internal/contract` 定义接口与 DTO，`internal/backend` 提供内存 mock，后续替换为 SQLite / 真实服务
+
+## 目录结构
+
+```text
+cmd/desktop/main.go          启动入口，注入各后端服务
+internal/contract/           接口与 DTO（app / apps / plugin / assistant / agent）
+internal/backend/            内存版 mock 实现
+internal/ui/
+├── shell/                   窗口外壳：自绘标题栏 + 一级导航 + 页面容器
+├── pages/                   原生页面（apps / assistant / agents / plugins / aigc）
+├── components/              公共组件（Button、Card、Avatar、Drawer、Icon 等）
+├── theme/                   品牌主题（#fb5215）与明暗色 token
+└── format/                  时间、文件大小格式化
 ```
 
-To run:
+## 开发
 
 ```bash
-bun run index.ts
+go tool mygo dev      # 开发模式运行
 ```
 
-To type check:
+## 构建与检查
 
 ```bash
-bun check
+go tool mygo build    # 构建安装包，输出到 build/
+gofmt -l .            # 格式检查
+go vet ./...          # 静态检查
+go test ./...         # 单元测试
 ```
 
-Run `bun fmt` to format the code.
+## 约定
 
-This project was created using `bun init` in bun v1.4.4. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
-我想要的是有一个主agent（助理模块）主agent相当于是用户的助理or虚拟女友，会有虚拟形象展示，可以讲话，笑，生气，跳舞...等动作，然后 agents模块可以创建不同的agent,用户也可单独跟某个agent对话， 也可以将不同的agent拉到一个群聊，每个群聊都有助理(也就是主agent)负责任务派发，汇报给用户， 每个agent 不论主agent还是动态创建的agent都有人设，长期记忆系统，可以配置可使用的插件范围， 插件模块是单独一个模块，可以从本地或远程安装
+开发前请先阅读 [AGENTS.md](AGENTS.md)，遵循项目的协作规则与编码规范。

@@ -4,97 +4,71 @@
 
 ## 1. 项目概览
 
-bowknot-workbench 是一个本地优先的 AI 助理与多 Agent 协作工作台，当前处于**前端 UI 先行**阶段。
+bowknot-workbench 是一个本地优先的 AI 助理与多 Agent 协作工作台，为 **mygo 原生 Go 桌面端**。
 
-- 仓库：Bun workspaces，业务代码在 `web` 工作区
-- 技术栈：Vue 3.5（`<script setup lang="ts">`）、TypeScript、Vite 8、UnoCSS、antdv-next、Pinia、vue-router
-- 包管理：Bun（不要使用 npm / yarn / pnpm 生成新锁文件）
-- 产品文档：`docs/product-requirements/`，实现前先对齐 PRD；PRD 与实现冲突时先反馈
+- 原生 UI 优先：立即模式 UI，无 WebView，页面状态存放在页面结构体字段中
+- 后端与 UI 分离：UI 只调用 `internal/contract` 接口，不感知数据来源；mock 实现位于 `internal/backend`，后续替换为 SQLite / 真实服务
+- 品牌：主题色 `#fb5215`，主题 token 见 `internal/ui/theme`
 
 ## 2. 必须遵守的协作规则
 
 1. **复用优先，禁止堆砌一次性代码**
-   - 可复用的逻辑抽成组合函数，放 `web/src/composables/`
-   - 可复用的 UI 抽成组件：基础组件放 `web/src/components/global/`，业务共享组件放 `web/src/components/shared/`
-   - 通用函数抽成工具函数，放 `web/src/utils/`（目录不存在时新建）
+   - 可复用的 UI 组件放 `internal/ui/components/`
+   - 通用格式化函数放 `internal/ui/format/`
    - 新增前先搜索现有实现；同一段逻辑出现 3 次以上必须抽离
 2. **验收方式**
-   - 除非用户明确要求，**不得主动调用浏览器控制插件或电脑控制插件**
-   - 默认通过静态检查、类型检查、构建、日志与代码审查完成自验
-   - 需要真实交互/截图验收时，先向用户说明并征得同意
-3. **样式优先 UnoCSS**
-   - 优先使用 UnoCSS class，不要在 `<style>` 里重复写已有工具类
-   - 组件内编写 scoped CSS 时优先使用 `@apply` 组合主题工具类，例如 `@apply bk-bg-container bk-shadow b-l-1;`，不要手写 `background` / `box-shadow` / `border` 等主题声明
-   - 多个 class 的组合如果重复出现或语义明确，抽成 `web/uno.config.ts` 的 `shortcuts`
-   - 只在需要复杂选择器、伪元素、动画、渐变或第三方组件覆盖时写原生 scoped CSS
-4. **新增依赖须先确认，并由用户安装**
-   - 引入任何新依赖前，先说明包名、用途、体积与可替代方案，得到用户明确同意后再修改依赖声明
-   - 依赖安装与 lockfile 更新由用户执行（`bun install` / `bun add`），代理不得自行运行安装命令
-   - 安装完成前不假设依赖可用，不因缺少依赖而擅自更换实现方案
+   - **不得主动启动桌面窗口或调用浏览器 / 电脑控制插件**，交互效果需人工运行确认
+   - 默认通过 `gofmt`、`go vet`、`go build`、`go test` 与代码审查完成自验
+3. **立即模式 UI 的约束**
+   - 页面状态必须存放在页面结构体的持久字段中，不要在视图构建函数里用临时变量承载跨帧状态（例如折叠开关、滚动位置、流式缓冲）
+   - 需要 `*bool` / `*int` 之类指针的场景（如 Collapsible、Checkbox），用包级状态或字段里的指针，确保每帧指向同一地址
+   - 后台事件（流式回复等）禁止直接改 UI 状态，必须通过壳层注入的 `Update` 钩子回到主线程
+4. **新增依赖须先确认**
+   - 引入任何新依赖前，先说明用途与替代方案，得到明确同意后再修改 `go.mod`
+   - `go mod tidy` 由代理执行前同样需要说明
+5. **改动保持最小范围**，不顺手重构、不修改与任务无关的文件
 
 ## 3. 目录约定
 
 ```text
-web/src/
-├── assets/          # 静态资源
-├── components/
-│   ├── global/      # 全局基础组件，已在 main.ts 统一注册
-│   └── shared/      # 业务共享组件
-├── composables/     # 组合函数
-├── constants/       # 常量（PREFIX = 'bk'）
-├── directives/      # 全局指令
-├── layout/          # 全局布局
-├── router/          # 路由与守卫
-├── store/           # Pinia
-├── styles/          # reset / icons / transition / animate
-├── types/           # 全局类型声明
-├── utils/           # 工具函数（按需新建）
-└── views/           # 页面，一页一目录，入口 index.vue
+cmd/desktop/main.go          启动入口，组装后端服务注入壳层
+internal/contract/           接口与 DTO，一个模块一个文件（app / assistant / agent…）
+internal/backend/            内存 mock 实现，模拟流式回复与演示数据
+internal/ui/
+├── shell/                   窗口外壳：自绘标题栏、一级导航、页面注册与切换
+├── pages/                   原生页面，一页一个目录（apps / assistant / agents / plugins / aigc）
+├── components/              公共组件与图标（Button、Card、Avatar、Drawer、Icon 等）
+├── theme/                   品牌主题与明暗色 token
+└── format/                  时间、相对时间、文件大小格式化
 ```
 
-- 页面组件：`defineOptions({ name: 'XxxPage' })`
-- 业务组件：目录与组件同名（如 `Conversations/Conversations.vue`），公共类型放同目录 `type.ts`
-- 路径别名：`@` → `web/src`
+- 新页面实现后注册进 `shell.New` 的 `native` 表，路由与一级导航对齐
+- 页面间不互相 import；共享逻辑下沉到 `components` 或 `contract`
 
 ## 4. 编码规范
 
-- Vue 组件统一使用 `<script setup lang="ts">` + 类型式 `defineProps` / `defineEmits`
-- 禁止 `any`；公共类型放组件 `type.ts` 或 `web/src/types/`
-- 路由页面使用懒加载，命名 `XxxPage`，路由表维护在 `web/src/router/routes.ts`
-- 全局基础组件需在 `web/src/components/global/index.ts` 注册，并在 `web/src/types/vue.d.ts` 的 `GlobalComponents` 中补充类型
-- 图标：从 Iconify 取 SVG，写成 `web/src/styles/icons.css` 中的 `.i-*` mask class，同时更新 `web/src/components/global/Icon/type.ts` 的 `IconName`；页面统一用 `<BkIcon name="..." />`
-- 注释、UI 文案使用中文；注释只解释“为什么”，不复述代码
-- 改动保持最小范围，不顺手重构、不修改与任务无关的文件
+- 注释、UI 文案使用中文；注释只解释「为什么」，不复述代码
+- 颜色、圆角、间距优先使用 `c.Theme()` 的 token（`t.Accent`、`t.Surface` 等），不写死颜色值
+- 图标统一走 `components.Icon` 与 `components.IconName`，新增图标使用 lucide 风格 SVG（24 viewBox、stroke 2）
+- 错误信息返回给 UI 层展示时使用中文
+- 并发：mock 服务的流式事件用带缓冲 channel + goroutine，锁内不做阻塞操作，回调前先释放锁
+- 单个函数只做一件事；视图构建函数过长时拆成私有方法
 
-## 5. 样式与设计系统
-
-- 基于 antdv-next + `@antdv-next/unocss`，前缀为 `bk`，主题色 `#fb5215`
-- 颜色、间距、圆角优先使用 token：`bk-bg-container`、`bk-text-secondary`、`bk-p-sm`、`bk-rd-lg` 等
-- scoped CSS 优先用 `@apply` 组合主题工具类，例如 `@apply bk-bg-container bk-shadow b-l-1;`
-- `@apply` 无法表达时（复杂选择器、渐变、伪元素等）再用 `var(--bk-color-primary)`、`var(--bk-color-bg-container)` 等 CSS 变量，不要写死颜色
-- 边框使用项目自定义规则：`b-all-1`、`b-b-1`、`b-r-1`、`b-l-1`，颜色默认取 `split`
-- 现有 shortcuts：`flex-center`、`box-container`、`popover-item`；新增 shortcuts 保持命名语义化
-- 必须兼容明暗主题；为动画补充 `prefers-reduced-motion` 降级
-- 组件超过约 300 行时考虑拆分；单个函数只做一件事
-
-## 6. 质量校验
-
-按需执行，提交前至少跑 lint：
+## 5. 质量校验
 
 ```bash
-bun install            # 仓库根目录
-bun run dev:web        # 启动前端
-cd web
-bun run lint           # oxlint
-bun run fmt            # oxfmt 格式化
-bun run build          # vue-tsc 类型检查 + vite 构建
+gofmt -w <改动文件>   # 提交前必须格式化
+go vet ./...          # 静态检查
+go build ./...        # 编译
+go test ./...         # 单元测试
+go tool mygo dev      # 开发模式运行（人工验收用）
+go tool mygo build    # 构建
 ```
 
-- `web/src/views/error/notFound/index.vue` 存在历史遗留的 `rotate` 类型错误，未修复前 `build` 可能失败；这是既有问题，不要把它算作本次改动，也不要顺手改无关代码
-- 不擅自启动常驻服务；需要时后台运行，任务结束前停止
-- 不自动执行 `git commit` / `git push`，除非用户明确要求
+- 提交前至少跑 `gofmt` 与 `go vet`
+- 窗口交互、渲染效果不做自动化验收，由人工运行确认
 
-## 7. 验收与沟通
+## 6. 验收与沟通
 
 - 完成任务后说明改了什么、涉及哪些文件、如何验证，不夸大结果
 - 无法验证的部分明确告知，不假设通过
