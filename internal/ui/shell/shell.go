@@ -50,6 +50,8 @@ type Shell struct {
 	current pages.Page
 	// mode 是外观模式：跟随系统 / 暗黑 / 明亮，由标题栏弹出框切换。
 	mode theme.Mode
+	// themeMenuOpen 是主题弹出框的开关状态，指针跨帧保持稳定。
+	themeMenuOpen bool
 }
 
 // New 组装原生壳。所有一级页面均为原生实现，未实现的显示占位。
@@ -88,16 +90,16 @@ func (s *Shell) Start() {
 }
 
 // titleBarHeight 是自绘标题栏的高度。
-const titleBarHeight = 40
+const titleBarHeight = 50
 
 // view 是窗口根视图：自绘标题栏 + 左侧导航 + 页面内容。
 func (s *Shell) view(c *ui.Context) {
 	ui.Themed(c, theme.For(c, s.mode)).Fill().Children(func() {
 		t := c.Theme()
 
-		ui.Column(c).Fill().Children(func() {
+		ui.Column(c).Gap(t.Space(3)).Fill().Children(func() {
 			s.titleBar(c)
-			ui.Row(c).Grow(1).Background(t.Background).Children(func() {
+			ui.Row(c).Gap(t.Space(3)).PaddingX(t.Space(3)).PaddingY(t.Space(3)).Grow(1).Background(t.Background).Children(func() {
 				s.rail(c)
 				s.content(c)
 			})
@@ -115,12 +117,11 @@ func (s *Shell) titleBar(c *ui.Context) {
 		Height(titleBarHeight).
 		Shrink(0).
 		Background(t.Surface).
-		BorderWidth(0, 0, 1, 0).
-		BorderColor(t.Border).
 		Padding(0, 16).
 		AlignItems(ui.Center).
 		Justify(ui.SpaceBetween).
 		DragWindow().
+		Shadow(0, 0, 8, 0, theme.ShadowColor.Alpha(0.3)).
 		Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				components.Icon(c, components.IconLogo, 24).TextColor(t.Accent)
@@ -167,7 +168,11 @@ func (s *Shell) themeButton(c *ui.Context) {
 		components.Icon(c, iconName, 15).TextColor(t.Text)
 	})
 
-	btn.PopoverMenuButton(func(m *ui.Menu) {
+	if btn.Clicked() {
+		s.themeMenuOpen = true
+	}
+
+	components.Popover(c, btn, &s.themeMenuOpen, func() {
 		items := []struct {
 			label string
 			mode  theme.Mode
@@ -177,9 +182,10 @@ func (s *Shell) themeButton(c *ui.Context) {
 			{"明亮模式", theme.ModeLight},
 		}
 		for _, it := range items {
-			if m.Item(it.label).Radio(s.mode == it.mode).Chosen() {
+			components.PopoverItem(c, it.label, s.mode == it.mode, func() {
 				s.mode = it.mode
-			}
+				s.themeMenuOpen = false
+			})
 		}
 	})
 }
@@ -216,15 +222,15 @@ func (s *Shell) rail(c *ui.Context) {
 	t := c.Theme()
 
 	ui.Column(c).
-		Width(78).
+		Width(86).
 		FillHeight().
+		Padding(4).
+		GapY(4).
+		Radius(t.Radius).
 		Background(t.Surface).
-		BorderWidth(0, 1, 0, 0).
-		BorderColor(t.Border).
 		AlignItems(ui.Center).
+		Shadow(0, 0, 8, 0, theme.ShadowColor.Alpha(0.3)).
 		Children(func() {
-			// 品牌展示移至标题栏，导航项直接从顶部开始。
-			ui.Box(c).Height(6)
 			for _, item := range navItems {
 				s.railItem(c, item)
 			}
@@ -236,9 +242,9 @@ func (s *Shell) railItem(c *ui.Context, item navItem) {
 	selected := item.Route == s.active
 
 	btn := ui.ButtonBase(c).
-		Width(86).
+		FillWidth().
 		Height(70).
-		Radius(0).
+		Radius(theme.Radius).
 		AlignItems(ui.Center).
 		Justify(ui.Center).
 		Label(item.Label)

@@ -67,20 +67,28 @@ func New(svc contract.AppCatalog, hooks Hooks) *Page {
 }
 
 func (p *Page) View(c *ui.Context) {
+	t := c.Theme()
+	appCount := len(p.apps)
 	components.Page(c, func() {
-		components.PageHeader(c, components.HeaderProps{
-			Title:    "Apps",
-			Subtitle: "安装应用，能力自动接入助理",
-			Count:    len(p.apps),
-		}, func() {
-			ui.SearchField(c, &p.query).Width(220).Placeholder("搜索应用")
-			ui.Select(c, &p.sortLabel, sortOptions).Width(116)
-			if components.Button(c, components.ButtonProps{
-				Label:   "安装应用",
-				Variant: components.ButtonPrimary,
-			}).Clicked() {
-				p.openInstall()
-			}
+		ui.Row(c).FillWidth().Background(t.Surface).Radius(t.Radius).Padding(t.Space(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(t.Space(3)).Children(func() {
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "Apps").FontSize(22).Bold()
+				if appCount >= 0 {
+					components.Chip(c, fmt.Sprint(appCount), components.ToneNeutral)
+				}
+				ui.Text(c, "安装应用，能力自动接入助理").FontSize(12).TextColor(t.TextMuted)
+			})
+
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+				ui.SearchField(c, &p.query).Width(220).Placeholder("搜索应用")
+				ui.Select(c, &p.sortLabel, sortOptions).Width(116)
+				if components.Button(c, components.ButtonProps{
+					Label:   "安装应用",
+					Variant: components.ButtonPrimary,
+				}).Clicked() {
+					p.openInstall()
+				}
+			})
 		})
 
 		list := p.visible()
@@ -124,7 +132,7 @@ func (p *Page) View(c *ui.Context) {
 
 func (p *Page) gridView(c *ui.Context, list []contract.AppItem) {
 	p.grid.Key = func(i int) any { return list[i].ID }
-	ui.GridView(c, &p.grid, len(list), 260, 116, func(i int) {
+	ui.GridView(c, &p.grid, len(list), 260, 100, func(i int) {
 		p.appCard(c, list[i])
 	}).Grow(1)
 }
@@ -134,9 +142,9 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 
 	card := ui.Row(c).
 		Fill().
-		Padding(14).
-		Gap(12).
-		Radius(12).
+		Padding(t.Space(3)).
+		Gap(t.Space(3)).
+		Radius(t.Radius).
 		Background(t.Surface).
 		BorderWidth(1).
 		AlignItems(ui.Center)
@@ -148,7 +156,7 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 	}
 
 	card.Children(func() {
-		components.Avatar(c, app.IconText, 42)
+		components.Avatar(c, app.IconText, 56)
 
 		ui.Column(c).Grow(1).Gap(3).Children(func() {
 			ui.Text(c, app.DisplayName).FontSize(14).Bold().MaxLines(1)
@@ -158,7 +166,7 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 				MaxLines(1)
 
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, fmt.Sprintf("v%s · %s", app.Version, lastUsedText(app))).
+				ui.Text(c, fmt.Sprintf("v%s   ·   %s", app.Version, lastUsedText(app))).
 					FontSize(11).
 					TextColor(t.TextMuted).
 					MaxLines(1)

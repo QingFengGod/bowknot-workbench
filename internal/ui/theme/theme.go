@@ -9,7 +9,7 @@ var (
 	BrandPressed = ui.Hex("#d9430f")
 )
 
-// 圆角 token，对应 Web 端的 borderRadiusXS / SM / base / LG。
+// 圆角 token
 const (
 	RadiusXS float32 = 4
 	RadiusSM float32 = 8
@@ -45,7 +45,8 @@ func For(c *ui.Context, mode Mode) *ui.Theme {
 		th.Surface = ui.Hex("#17181c")
 		th.SurfaceHover = ui.Hex("#1f2026")
 		th.SurfacePressed = ui.Hex("#26272e")
-		th.Border = ui.Hex("#414243")
+		// 边框明显亮于 SurfaceHover，避免悬停背景与描边糊在一起。
+		th.Border = ui.Hex("#4a4e58")
 		th.Text = ui.Hex("#f2f3f5")
 		th.TextMuted = ui.Hex("#9aa0a6")
 	} else {
@@ -53,7 +54,8 @@ func For(c *ui.Context, mode Mode) *ui.Theme {
 		th.Surface = ui.Hex("#ffffff")
 		th.SurfaceHover = ui.Hex("#f2f3f5")
 		th.SurfacePressed = ui.Hex("#e9ecf2")
-		th.Border = ui.Hex("#e3e6ec")
+		// 边框明显深于 SurfaceHover，保证卡片、导航描边可辨。
+		th.Border = ui.Hex("#d3d9e2")
 		th.Text = ui.Hex("#1f2329")
 		th.TextMuted = ui.Hex("#8a9099")
 	}
@@ -69,6 +71,9 @@ func For(c *ui.Context, mode Mode) *ui.Theme {
 	th.Selection = Brand.Alpha(0.18)
 	th.Focus = Brand
 	th.Radius = Radius
-
 	return &th
 }
+
+// ShadowColor 是阴影基色（纯黑），使用时用 .Alpha() 控制深浅，
+// 例如卡片 theme.ShadowColor.Alpha(0.08)、浮层 theme.ShadowColor.Alpha(0.16)。
+var ShadowColor = ui.RGB(0, 0, 0)

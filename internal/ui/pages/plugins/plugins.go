@@ -43,19 +43,27 @@ func New(svc contract.PluginService) *Page {
 }
 
 func (p *Page) View(c *ui.Context) {
+	t := c.Theme()
+	pluginCount := len(p.plugins)
 	components.Page(c, func() {
-		components.PageHeader(c, components.HeaderProps{
-			Title:    "插件",
-			Subtitle: "安装插件，把工具按需授权给助理或子 Agent",
-			Count:    len(p.plugins),
-		}, func() {
-			ui.SearchField(c, &p.query).Width(220).Placeholder("搜索插件")
-			if components.Button(c, components.ButtonProps{
-				Label:   "安装插件",
-				Variant: components.ButtonPrimary,
-			}).Clicked() {
-				p.openInstall()
-			}
+		ui.Row(c).FillWidth().Background(t.Surface).Radius(t.Radius).Padding(t.Space(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(t.Space(3)).Children(func() {
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "插件").FontSize(22).Bold()
+				if pluginCount >= 0 {
+					components.Chip(c, fmt.Sprint(pluginCount), components.ToneNeutral)
+				}
+				ui.Text(c, "安装插件，把工具按需授权给助理或子 Agent").FontSize(12).TextColor(t.TextMuted)
+			})
+
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+				ui.SearchField(c, &p.query).Width(220).Placeholder("搜索插件")
+				if components.Button(c, components.ButtonProps{
+					Label:   "安装插件",
+					Variant: components.ButtonPrimary,
+				}).Clicked() {
+					p.openInstall()
+				}
+			})
 		})
 
 		list := p.filtered()
