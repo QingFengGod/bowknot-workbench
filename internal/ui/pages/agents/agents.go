@@ -11,7 +11,7 @@ import (
 
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/ui/components"
-	"bowknot-workbench/internal/ui/format"
+	"bowknot-workbench/internal/ui/theme"
 )
 
 // Hooks 是页面依赖的外部动作，由壳层注入。
@@ -42,12 +42,18 @@ type Page struct {
 	sendErr    string
 	focusDraft bool
 
-	panelGroupOpen    map[string]*bool
-	sessionGroupOpen  map[string]*bool
+	panelGroupOpen   map[string]*bool
+	sessionGroupOpen map[string]*bool
+	// itemMenuOpen 保存左侧列表每个条目「更多」菜单的开关，按条目分别持有指针。
+	itemMenuOpen      map[string]*bool
 	panelScroll       ui.ScrollState
 	chatScroll        ui.ScrollState
 	sessionScroll     ui.ScrollState
 	sessionsCollapsed bool
+	// sessionMenuOpen 保存每个会话「更多」菜单的开关，按会话分别持有指针。
+	sessionMenuOpen   map[string]*bool
+	sessionDeleteOpen bool
+	sessionDeleteID   string
 	// follow 为 true 时消息列表贴着底部，用户上滚后关闭，回到底部再恢复。
 	follow bool
 	// lastMaxY 记录上一帧的最大滚动距离，用来判断内容是否变高。
@@ -99,6 +105,8 @@ func New(svc contract.AgentService, hooks Hooks) *Page {
 			"week":      boolValue(false),
 			"earlier":   boolValue(false),
 		},
+		sessionMenuOpen: map[string]*bool{},
+		itemMenuOpen:    map[string]*bool{},
 	}
 	p.reloadAgents()
 	p.reloadModels()
@@ -110,21 +118,35 @@ func (p *Page) View(c *ui.Context) {
 
 	p.followEnd()
 
-	ui.Row(c).Fill().Background(t.Background).Children(func() {
+	// 动画通道挂在常驻根行上，会话列收起后彻底退出布局，
+	// 也不会给父容器留下多余的 gap。
+	root := ui.Row(c).Gap(t.Space(3)).Fill()
+	target := float32(1)
+	if p.sessionsCollapsed {
+		target = 0
+	}
+	progress := root.AnimateTo("sessions-panel", target, ui.Animation{
+		Duration: 180 * time.Millisecond,
+		Ease:     ui.EaseOut,
+	})
+
+	root.Children(func() {
 		p.panel(c)
 
-		ui.Column(c).Grow(1).FillHeight().Children(func() {
+		chat := ui.Column(c).Grow(1).Background(t.Surface).Radius(theme.Radius).Clip().FillHeight()
+		theme.NormalShadow.Apply(c, chat)
+		chat.Children(func() {
 			if p.activeKey == "" {
 				p.emptyHint(c)
 				return
 			}
-			p.chatHeader(c)
+			p.chatHeader(c, progress)
 			p.messageList(c)
 			p.composer(c)
 		})
 
-		if p.activeAgent() != nil && !p.sessionsCollapsed {
-			p.sessionColumn(c)
+		if p.activeAgent() != nil && progress > 0.001 {
+			p.sessionColumn(c, progress)
 		}
 	})
 
@@ -132,47 +154,35 @@ func (p *Page) View(c *ui.Context) {
 	p.agentDialog(c)
 	p.groupDialog(c)
 	p.deleteModal(c)
+	p.deleteSessionModal(c)
 	p.deleteMessageModal(c)
 }
 
-// emptyHint 是未选择任何条目时的占位，与 Web 端一致。
+// emptyHint 是未选择任何条目时的占位，与助手页的空状态保持一致。
 func (p *Page) emptyHint(c *ui.Context) {
-	t := c.Theme()
-
-	ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
-		ui.Box(c).
-			Width(80).
-			Height(80).
-			Radius(40).
-			BorderWidth(1).
-			BorderColor(t.Accent).
-			TextColor(t.Accent).
-			AlignItems(ui.Center).
-			Justify(ui.Center).
-			Children(func() {
-				components.Icon(c, components.IconAgents, 40)
-			})
-		ui.Text(c, "选择一个 Agent 或群聊").FontSize(16).Bold()
-		ui.Text(c, "左侧列表里点一个条目，就能直接开始对话。").FontSize(12).TextColor(t.TextMuted)
+	components.EmptyState(c, components.EmptyProps{
+		Icon:  components.IconAgents,
+		Title: "选择一个 Agent 或群聊",
+		Hint:  "左侧列表里点一个条目，就能直接开始对话。",
 	})
 }
 
-func (p *Page) chatHeader(c *ui.Context) {
+func (p *Page) chatHeader(c *ui.Context, progress float32) {
 	t := c.Theme()
 
 	ui.Row(c).
 		FillWidth().
 		Height(58).
 		Shrink(0).
-		Padding(0, 16).
+		PaddingX(t.Space(3)).
 		Background(t.Surface).
 		BorderWidth(0, 0, 1, 0).
 		BorderColor(t.Border).
 		AlignItems(ui.Center).
 		Justify(ui.SpaceBetween).
 		Children(func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				p.entityAvatar(c, 34)
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+				p.entityAvatar(c, 40)
 				ui.Column(c).Gap(1).Children(func() {
 					ui.Text(c, p.activeName()).FontSize(14).Bold().MaxLines(1).MaxWidth(300)
 					ui.Text(c, p.activeDesc()).FontSize(11).TextColor(t.TextMuted)
@@ -183,10 +193,23 @@ func (p *Page) chatHeader(c *ui.Context) {
 			})
 
 			if p.activeAgent() != nil {
-				toggle := iconButton(c, components.IconPanel)
-				label := "展开会话列表"
-				if !p.sessionsCollapsed {
-					label = "收起会话列表"
+				toggle := ui.ButtonBase(c).
+					Width(22).
+					Height(22).
+					Radius(4).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					TextColor(t.TextMuted)
+				if toggle.Hovered() {
+					toggle.Background(t.SurfacePressed).TextColor(t.Text)
+				}
+				// 图标随展开进度平滑旋转，收起时转到 180°。
+				toggle.Children(func() {
+					components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - progress))
+				})
+				label := "收起会话列表"
+				if p.sessionsCollapsed {
+					label = "展开会话列表"
 				}
 				if toggle.Tooltip(label).Clicked() {
 					p.sessionsCollapsed = !p.sessionsCollapsed
@@ -195,7 +218,7 @@ func (p *Page) chatHeader(c *ui.Context) {
 		})
 }
 
-// entityAvatar 渲染当前条目的头像：单聊取头像文字，群聊叠放成员头像。
+// entityAvatar 渲染当前条目的头像：单聊取头像文字，群聊为四宫格成员头像。
 func (p *Page) entityAvatar(c *ui.Context, size float32) {
 	if agent := p.activeAgent(); agent != nil {
 		components.Avatar(c, agent.AvatarText, size)
@@ -205,24 +228,86 @@ func (p *Page) entityAvatar(c *ui.Context, size float32) {
 	if group == nil {
 		return
 	}
+	p.groupAvatar(c, size, group.MemberIDs)
+}
 
-	members := group.MemberIDs
-	if len(members) > 3 {
-		members = members[:3]
+// groupAvatar 画与单人头像同尺寸的群聊头像：内部四宫格，
+// 成员超过四个时最后一格显示剩余数量。
+func (p *Page) groupAvatar(c *ui.Context, size float32, ids []string) {
+	t := c.Theme()
+
+	if len(ids) == 0 {
+		components.Avatar(c, "群", size)
+		return
 	}
-	ui.Row(c).Gap(2).AlignItems(ui.Center).Children(func() {
-		for _, id := range members {
-			text := "?"
-			for _, agent := range p.agents {
-				if agent.ID == id {
-					text = agent.AvatarText
-					break
-				}
-			}
-			components.Avatar(c, text, size*0.62)
+
+	cells := make([]string, 0, 4)
+	for _, id := range ids {
+		// 超过四个成员时只保留前三格，第四格让给数量。
+		if len(ids) > 4 && len(cells) == 3 {
+			break
 		}
-		components.Avatar(c, "助", size*0.62)
-	})
+		cells = append(cells, p.avatarText(id))
+		if len(cells) == 4 {
+			break
+		}
+	}
+	if len(ids) > 4 {
+		cells = append(cells, fmt.Sprintf("+%d", len(ids)-3))
+	}
+
+	const gap float32 = 2
+	pad := size * 0.08
+	cell := (size - pad*2 - gap) / 2
+
+	ui.Box(c).
+		Width(size).
+		Height(size).
+		Shrink(0).
+		Radius(size * 0.3).
+		Padding(pad).
+		AlignItems(ui.Center).
+		Justify(ui.Center).
+		Background(t.SurfacePressed).
+		Children(func() {
+			ui.Column(c).Gap(gap).Children(func() {
+				for start := 0; start < len(cells); start += 2 {
+					batch := cells[start:min(start+2, len(cells))]
+					ui.Row(c).Gap(gap).Children(func() {
+						for _, text := range batch {
+							bg, fg := t.Accent.Alpha(0.12), t.Accent
+							if strings.HasPrefix(text, "+") {
+								bg, fg = t.SurfacePressed, t.TextMuted
+							}
+							ui.Box(c).
+								Width(cell).
+								Height(cell).
+								Radius(cell * 0.3).
+								Background(bg).
+								AlignItems(ui.Center).
+								Justify(ui.Center).
+								Children(func() {
+									ui.Text(c, text).
+										FontSize(cell * 0.58).
+										Bold().
+										TextColor(fg).
+										MaxLines(1)
+								})
+						}
+					})
+				}
+			})
+		})
+}
+
+// avatarText 返回成员的头像文字，找不到时用问号占位。
+func (p *Page) avatarText(id string) string {
+	for _, agent := range p.agents {
+		if agent.ID == id {
+			return agent.AvatarText
+		}
+	}
+	return "?"
 }
 
 func (p *Page) messageList(c *ui.Context) {
@@ -240,10 +325,19 @@ func (p *Page) messageList(c *ui.Context) {
 			return
 		}
 
-		ui.Scroll(c).Grow(1).TrackScroll(&p.chatScroll).Children(func() {
+		var questions []components.QuestionNavItem
+
+		list := ui.Scroll(c).Grow(1).TrackScroll(&p.chatScroll)
+		list.Children(func() {
 			ui.Column(c).FillWidth().Padding(20, 24).Gap(18).Children(func() {
 				for _, message := range p.messages {
-					p.messageItem(c, message)
+					item := p.messageItem(c, message)
+					if message.Role == contract.RoleUser {
+						questions = append(questions, components.QuestionNavItem{
+							Title:  message.Content,
+							Target: item,
+						})
+					}
 				}
 			})
 		})
@@ -258,16 +352,23 @@ func (p *Page) messageList(c *ui.Context) {
 				p.stickToBottom()
 			}
 		}
+
+		components.QuestionNav(c, components.QuestionNavProps{
+			Items:    questions,
+			List:     list,
+			AtEnd:    p.chatScroll.MaxY > 0 && p.chatScroll.Y >= p.chatScroll.MaxY-2,
+			OnSelect: func() { p.follow = false },
+		})
 	})
 }
 
-func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) {
+func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	avatar := "助"
 	if m.SenderAvatar != "" {
 		avatar = m.SenderAvatar
 	}
 
-	components.MessageView(c, components.MessageViewProps{
+	return components.MessageView(c, components.MessageViewProps{
 		Message:    m,
 		AvatarText: avatar,
 		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
@@ -339,58 +440,49 @@ func (p *Page) modelPicker(c *ui.Context) {
 func (p *Page) panel(c *ui.Context) {
 	t := c.Theme()
 
-	ui.Column(c).
+	root := ui.Column(c).
 		Width(300).
 		FillHeight().
 		Shrink(0).
 		Background(t.Surface).
-		BorderWidth(0, 1, 0, 0).
-		BorderColor(t.Border).
-		Children(func() {
-			ui.Row(c).
-				FillWidth().
-				Height(58).
-				Padding(0, 12).
-				AlignItems(ui.Center).
-				Justify(ui.SpaceBetween).
-				Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "Agents").FontSize(13).Bold()
-						components.Chip(c, fmt.Sprint(len(p.agents)+len(p.groups)), components.ToneNeutral)
-					})
+		Radius(theme.Radius).
+		Clip()
 
-					add := ui.ButtonBase(c).
-						Width(26).
-						Height(26).
-						Radius(6).
-						AlignItems(ui.Center).
-						Justify(ui.Center).
-						TextColor(t.TextMuted)
-					if add.Hovered() {
-						add.Background(t.SurfaceHover).TextColor(t.Accent)
-					}
-					add.Children(func() {
-						components.Icon(c, components.IconPlus, 14)
-					})
-					add.Tooltip("新建")
-					add.PopoverMenuButton(func(m *ui.Menu) {
-						if m.Item("新建 Agent").Chosen() {
-							p.openAgentDialog("")
-						}
-						if m.Item("新建群聊").Chosen() {
-							p.openGroupDialog("")
-						}
-					})
+	root.Children(func() {
+		ui.Row(c).
+			FillWidth().
+			Height(58).
+			PaddingX(t.Space(3)).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(t.Border).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Children(func() {
+				ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "Agents").FontSize(13).Bold()
+					components.Chip(c, fmt.Sprint(len(p.agents)+len(p.groups)), components.ToneNeutral)
 				})
 
-			ui.Scroll(c).Grow(1).TrackScroll(&p.panelScroll).Children(func() {
-				ui.Column(c).FillWidth().Padding(8).Gap(8).Children(func() {
-					for _, group := range p.panelGroups() {
-						p.panelGroup(c, group)
+				ui.Text(c, "新建").TextColor(t.Accent).PopoverMenuButton(func(m *ui.Menu) {
+					if m.Item("新建 Agent").Chosen() {
+						p.openAgentDialog("")
+					}
+					if m.Item("新建群聊").Chosen() {
+						p.openGroupDialog("")
 					}
 				})
 			})
+
+		ui.Scroll(c).Grow(1).TrackScroll(&p.panelScroll).Children(func() {
+			ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
+				for _, group := range p.panelGroups() {
+					p.panelGroup(c, group)
+				}
+			})
 		})
+	})
+
+	theme.NormalShadow.Apply(c, root)
 }
 
 type panelGroup struct {
@@ -464,32 +556,16 @@ func (p *Page) groupItem(group contract.AgentGroup) panelItem {
 }
 
 func (p *Page) panelGroup(c *ui.Context, group panelGroup) {
-	t := c.Theme()
 	open := p.panelGroupOpen[group.key]
 	if open == nil {
 		open = boolValue(true)
 		p.panelGroupOpen[group.key] = open
 	}
 
-	parts := ui.CollapsibleBase(c, open)
-
-	trigger := parts.Trigger.
-		FillWidth().
-		Height(24).
-		Padding(0, 4).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.SpaceBetween).
-		TextColor(t.TextMuted)
-	if trigger.Hovered() {
-		trigger.Background(t.SurfaceHover)
-	}
-	trigger.Children(func() {
-		ui.Text(c, group.title).FontSize(11).Bold().TextColor(t.TextMuted)
-		components.Icon(c, components.IconChevron, 11).Rotate(90 * parts.Progress())
-	})
-
-	parts.Panel(func() {
+	components.CollapsibleSection(c, components.CollapsibleSectionProps{
+		Title: group.title,
+		Open:  open,
+	}, func() {
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
 			for _, item := range group.items {
 				p.panelRow(c, item)
@@ -504,8 +580,8 @@ func (p *Page) panelRow(c *ui.Context, item panelItem) {
 
 	row := ui.Row(c).
 		FillWidth().
-		Padding(6, 8).
-		Radius(8).
+		Padding(t.Space(3)).
+		Radius(theme.Radius).
 		Gap(8).
 		AlignItems(ui.Center).
 		BorderWidth(0, 0, 0, 3).
@@ -518,6 +594,12 @@ func (p *Page) panelRow(c *ui.Context, item panelItem) {
 	}
 
 	handled := false
+	// 每个条目持有自己的菜单开关指针，指针跨帧稳定才能保留弹层状态。
+	menuOpen := p.itemMenuOpen[item.key]
+	if menuOpen == nil {
+		menuOpen = boolValue(false)
+		p.itemMenuOpen[item.key] = menuOpen
+	}
 	row.Children(func() {
 		p.itemAvatar(c, item)
 
@@ -542,38 +624,64 @@ func (p *Page) panelRow(c *ui.Context, item panelItem) {
 		more.Children(func() {
 			components.Icon(c, components.IconMore, 13)
 		})
-		more.PopoverMenuButton(func(m *ui.Menu) {
+		more.Tooltip("更多操作")
+		if more.Clicked() {
+			handled = true
+			*menuOpen = true
+		}
+		components.Popover(c, more, menuOpen, func() {
 			editLabel := "编辑人设"
 			if item.kind == contract.ItemKindGroup {
 				editLabel = "编辑成员"
 			}
-			if m.Item(editLabel).Chosen() {
-				p.editItem(item)
-				handled = true
-			}
+			components.PopoverItem(c, components.PopoverItemProps{
+				Label: editLabel,
+				OnClick: func() {
+					handled = true
+					*menuOpen = false
+					p.editItem(item)
+				},
+				Content: func(c *ui.Context, _ bool) {
+					ui.Text(c, editLabel).FontSize(13).TextColor(c.Theme().Text).MaxLines(1)
+				},
+			})
+
 			pinLabel := "置顶"
 			if item.pinned {
 				pinLabel = "取消置顶"
 			}
-			if m.Item(pinLabel).Chosen() {
-				p.togglePin(item)
-				handled = true
-			}
-			m.Separator()
+			components.PopoverItem(c, components.PopoverItemProps{
+				Label: pinLabel,
+				OnClick: func() {
+					handled = true
+					*menuOpen = false
+					p.togglePin(item)
+				},
+				Content: func(c *ui.Context, _ bool) {
+					ui.Text(c, pinLabel).FontSize(13).TextColor(c.Theme().Text).MaxLines(1)
+				},
+			})
+
+			ui.Box(c).FillWidth().Height(1).Background(t.Border)
+
 			removeLabel := "删除"
 			if item.kind == contract.ItemKindGroup {
 				removeLabel = "解散群聊"
 			}
-			if m.Item(removeLabel).Danger().Chosen() {
-				p.deleteKey = item.key
-				p.deleteOpen = true
-				handled = true
-			}
+			components.PopoverItem(c, components.PopoverItemProps{
+				Label:  removeLabel,
+				Danger: true,
+				OnClick: func() {
+					handled = true
+					*menuOpen = false
+					p.deleteKey = item.key
+					p.deleteOpen = true
+				},
+				Content: func(c *ui.Context, _ bool) {
+					ui.Text(c, removeLabel).FontSize(13).TextColor(c.Theme().Danger).MaxLines(1)
+				},
+			})
 		})
-		more.Tooltip("更多操作")
-		if more.Clicked() {
-			handled = true
-		}
 	})
 
 	if row.Clicked() && !handled {
@@ -581,88 +689,66 @@ func (p *Page) panelRow(c *ui.Context, item panelItem) {
 	}
 }
 
-// itemAvatar 渲染条目头像：单聊取头像文字，群聊显示成员头像组。
+// itemAvatar 渲染条目头像：单聊取头像文字，群聊为四宫格成员头像。
 func (p *Page) itemAvatar(c *ui.Context, item panelItem) {
 	if item.kind == contract.ItemKindAgent {
-		components.Avatar(c, item.avatar, 34)
+		components.Avatar(c, item.avatar, 40)
 		return
 	}
-
-	members := item.members
-	if len(members) > 3 {
-		members = members[:3]
-	}
-	ui.Row(c).Gap(2).AlignItems(ui.Center).Children(func() {
-		for _, id := range members {
-			text := "?"
-			for _, agent := range p.agents {
-				if agent.ID == id {
-					text = agent.AvatarText
-					break
-				}
-			}
-			components.Avatar(c, text, 21)
-		}
-		components.Avatar(c, "助", 21)
-	})
+	p.groupAvatar(c, 40, item.members)
 }
 
 // sessionColumn 是右侧的会话列表，仅单聊 Agent 显示。
-func (p *Page) sessionColumn(c *ui.Context) {
+// sessionColumn 是右侧会话列表：外层按展开进度收窄并裁剪，内层保持固定宽度，
+// 避免过渡中文字重新换行，与助手页的侧栏一致。
+func (p *Page) sessionColumn(c *ui.Context, progress float32) {
 	t := c.Theme()
+	const width float32 = 300
 
-	ui.Column(c).
-		Width(300).
-		FillHeight().
-		Shrink(0).
-		Background(t.Surface).
-		BorderWidth(0, 0, 0, 1).
-		BorderColor(t.Border).
-		Children(func() {
-			ui.Row(c).
-				FillWidth().
-				Height(58).
-				Padding(0, 12).
-				BorderWidth(0, 0, 1, 0).
-				BorderColor(t.Border).
-				AlignItems(ui.Center).
-				Justify(ui.SpaceBetween).
-				Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "会话").FontSize(13).Bold()
-						components.Chip(c, fmt.Sprint(len(p.sessions)), components.ToneNeutral)
-					})
+	root := ui.Box(c).Width(width * progress).FillHeight().Background(t.Surface).Radius(theme.Radius).Shrink(0).Clip().Children(func() {
+		ui.Column(c).
+			Width(width).
+			FillHeight().
+			Children(func() {
+				ui.Row(c).
+					FillWidth().
+					Height(58).
+					PaddingX(t.Space(3)).
+					BorderWidth(0, 0, 1, 0).
+					BorderColor(t.Border).
+					AlignItems(ui.Center).
+					Justify(ui.SpaceBetween).
+					Children(func() {
+						ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "会话").FontSize(13).Bold()
+							components.Chip(c, fmt.Sprint(len(p.sessions)), components.ToneNeutral)
+						})
 
-					ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-						if components.Button(c, components.ButtonProps{
-							Label:   "新建",
-							Variant: components.ButtonGhost,
-							Width:   56,
-						}).Clicked() {
+						if ui.Text(c, "新建").TextColor(t.Accent).Clicked() {
 							p.createSession()
 						}
-						if iconButton(c, components.IconPanel).Tooltip("收起会话列表").Clicked() {
-							p.sessionsCollapsed = true
+					})
+
+				if len(p.sessions) == 0 {
+					components.EmptyState(c, components.EmptyProps{
+						Icon:  components.IconMessage,
+						Title: "还没有会话",
+						Hint:  "新建一个会话开始对话。",
+					})
+					return
+				}
+
+				ui.Scroll(c).Grow(1).TrackScroll(&p.sessionScroll).Children(func() {
+					ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
+						for _, group := range p.sessionGroups() {
+							p.sessionGroup(c, group)
 						}
 					})
 				})
-
-			if len(p.sessions) == 0 {
-				ui.Column(c).Grow(1).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "还没有会话").FontSize(13).Bold()
-					ui.Text(c, "新建一个会话开始对话。").FontSize(11).TextColor(t.TextMuted)
-				})
-				return
-			}
-
-			ui.Scroll(c).Grow(1).TrackScroll(&p.sessionScroll).Children(func() {
-				ui.Column(c).FillWidth().Padding(8).Gap(8).Children(func() {
-					for _, group := range p.sessionGroups() {
-						p.sessionGroup(c, group)
-					}
-				})
 			})
-		})
+	})
+
+	theme.NormalShadow.Apply(c, root)
 }
 
 type sessionGroup struct {
@@ -742,26 +828,11 @@ func (p *Page) sessionGroup(c *ui.Context, group sessionGroup) {
 		p.sessionGroupOpen[group.key] = open
 	}
 
-	parts := ui.CollapsibleBase(c, open)
-
-	trigger := parts.Trigger.
-		FillWidth().
-		Height(24).
-		Padding(0, 4).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.SpaceBetween).
-		TextColor(t.TextMuted)
-	if trigger.Hovered() {
-		trigger.Background(t.SurfaceHover)
-	}
-	trigger.Children(func() {
-		ui.Text(c, group.title).FontSize(11).Bold().TextColor(t.TextMuted)
-		components.Icon(c, components.IconChevron, 11).Rotate(90 * parts.Progress())
-	})
-
-	parts.Panel(func() {
-		ui.Column(c).FillWidth().Gap(2).Children(func() {
+	components.CollapsibleSection(c, components.CollapsibleSectionProps{
+		Title: group.title,
+		Open:  open,
+	}, func() {
+		ui.Column(c).FillWidth().Gap(t.Space(2)).Children(func() {
 			for _, session := range group.sessions {
 				p.sessionRow(c, session)
 			}
@@ -770,79 +841,55 @@ func (p *Page) sessionGroup(c *ui.Context, group sessionGroup) {
 }
 
 func (p *Page) sessionRow(c *ui.Context, s contract.AgentSession) {
-	t := c.Theme()
-	active := s.ID == p.activeSessionID
-
-	row := ui.Column(c).
-		FillWidth().
-		Padding(7, 8).
-		Radius(8).
-		Gap(1).
-		BorderWidth(0, 0, 0, 3).
-		BorderColor(ui.Transparent)
-	switch {
-	case active:
-		row.Background(t.Accent.Alpha(0.1)).BorderColor(t.Accent)
-	case row.Hovered():
-		row.Background(t.SurfaceHover)
+	menuOpen := p.sessionMenuOpen[s.ID]
+	if menuOpen == nil {
+		menuOpen = boolValue(false)
+		p.sessionMenuOpen[s.ID] = menuOpen
 	}
 
-	handled := false
-	row.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Text(c, s.Title).FontSize(13).Bold().MaxLines(1).Grow(1)
-			ui.Text(c, format.Relative(s.UpdatedAt)).FontSize(11).TextColor(t.TextMuted)
-
-			more := ui.ButtonBase(c).
-				Width(20).
-				Height(20).
-				Radius(4).
-				AlignItems(ui.Center).
-				Justify(ui.Center).
-				TextColor(t.TextMuted)
-			if more.Hovered() {
-				more.Background(t.SurfacePressed).TextColor(t.Text)
-			}
-			more.Children(func() {
-				components.Icon(c, components.IconMore, 13)
-			})
-			more.PopoverMenuButton(func(m *ui.Menu) {
-				if m.Item("重命名").Chosen() {
-					p.renameID = s.ID
-					p.renameValue = s.Title
-					p.renameErr = ""
-					p.renameOpen = true
-					handled = true
-				}
-				pinLabel := "置顶"
-				if s.Pinned {
-					pinLabel = "取消置顶"
-				}
-				if m.Item(pinLabel).Chosen() {
-					p.pinSession(s)
-					handled = true
-				}
-				m.Separator()
-				if m.Item("删除").Danger().Chosen() {
-					p.deleteSession(s.ID)
-					handled = true
-				}
-			})
-			more.Tooltip("更多操作")
-			if more.Clicked() {
-				handled = true
-			}
-		})
-
-		summary := strings.TrimSpace(s.Summary)
-		if summary == "" {
-			summary = "还没有消息"
-		}
-		ui.Text(c, summary).FontSize(11).TextColor(t.TextMuted).MaxLines(1)
+	components.SessionItem(c, components.SessionItemProps{
+		Title:          s.Title,
+		Summary:        s.Summary,
+		UpdatedAt:      s.UpdatedAt,
+		Active:         s.ID == p.activeSessionID,
+		Pinned:         s.Pinned,
+		MenuOpen:       menuOpen,
+		DeleteDisabled: len(p.sessions) <= 1,
+		OnSelect:       func() { p.selectSession(s.ID) },
+		OnRename: func() {
+			p.renameID = s.ID
+			p.renameValue = s.Title
+			p.renameErr = ""
+			p.renameOpen = true
+		},
+		OnTogglePin: func() { p.pinSession(s) },
+		OnDelete:    func() { p.openDeleteSession(s) },
 	})
+}
 
-	if row.Clicked() && !handled {
-		p.selectSession(s.ID)
+func (p *Page) openDeleteSession(s contract.AgentSession) {
+	p.sessionDeleteID = s.ID
+	p.sessionDeleteOpen = true
+}
+
+func (p *Page) deleteSessionModal(c *ui.Context) {
+	var title string
+	for _, s := range p.sessions {
+		if s.ID == p.sessionDeleteID {
+			title = s.Title
+			break
+		}
+	}
+	if title == "" {
+		return
+	}
+
+	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	switch ui.AlertDialog(c, &p.sessionDeleteOpen, "删除会话",
+		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", title), "删除", "取消") {
+	case 0:
+		p.deleteSession(p.sessionDeleteID)
+		p.sessionDeleteID = ""
 	}
 }
 
@@ -1254,23 +1301,4 @@ func (p *Page) modelID() string {
 
 func boolValue(v bool) *bool {
 	return &v
-}
-
-func iconButton(c *ui.Context, name components.IconName) ui.Element {
-	t := c.Theme()
-
-	b := ui.ButtonBase(c).
-		Width(22).
-		Height(22).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.Center).
-		TextColor(t.TextMuted)
-	if b.Hovered() {
-		b.Background(t.SurfacePressed).TextColor(t.Text)
-	}
-	b.Children(func() {
-		components.Icon(c, name, 13)
-	})
-	return b
 }

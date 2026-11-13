@@ -116,7 +116,7 @@ func (p *Page) View(c *ui.Context) {
 	})
 
 	root.Children(func() {
-		leftPanel := ui.Column(c).Grow(1).Background(t.Surface).Radius(t.Radius).Clip().FillHeight().Children(func() {
+		leftPanel := ui.Column(c).Grow(1).Background(t.Surface).Radius(theme.Radius).Clip().FillHeight().Children(func() {
 			p.header(c, panelProgress)
 			p.messageList(c)
 			p.composer(c)
@@ -196,10 +196,19 @@ func (p *Page) messageList(c *ui.Context) {
 			return
 		}
 
-		ui.Scroll(c).Grow(1).TrackScroll(&p.chatScroll).Children(func() {
+		var questions []components.QuestionNavItem
+
+		list := ui.Scroll(c).Grow(1).TrackScroll(&p.chatScroll)
+		list.Children(func() {
 			ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(3)).Children(func() {
 				for _, message := range p.messages {
-					p.messageItem(c, message)
+					item := p.messageItem(c, message)
+					if message.Role == contract.RoleUser {
+						questions = append(questions, components.QuestionNavItem{
+							Title:  message.Content,
+							Target: item,
+						})
+					}
 				}
 			})
 		})
@@ -214,11 +223,18 @@ func (p *Page) messageList(c *ui.Context) {
 				p.stickToBottom()
 			}
 		}
+
+		components.QuestionNav(c, components.QuestionNavProps{
+			Items:    questions,
+			List:     list,
+			AtEnd:    p.chatScroll.MaxY > 0 && p.chatScroll.Y >= p.chatScroll.MaxY-2,
+			OnSelect: func() { p.follow = false },
+		})
 	})
 }
 
-func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) {
-	components.MessageView(c, components.MessageViewProps{
+func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
+	return components.MessageView(c, components.MessageViewProps{
 		Message:    m,
 		AvatarText: "助手",
 		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
@@ -289,7 +305,7 @@ func (p *Page) panel(c *ui.Context, progress float32) {
 	t := c.Theme()
 	const panelWidth float32 = 300
 
-	root := ui.Box(c).Width(panelWidth * progress).FillHeight().Background(t.Surface).Radius(t.Radius).Shrink(0).Clip().Children(func() {
+	root := ui.Box(c).Width(panelWidth * progress).FillHeight().Background(t.Surface).Radius(theme.Radius).Shrink(0).Clip().Children(func() {
 		ui.Column(c).
 			Width(panelWidth).
 			FillHeight().
@@ -477,72 +493,22 @@ func (p *Page) renameModal(c *ui.Context) {
 
 func (p *Page) deleteModal(c *ui.Context) {
 	session := p.sessionByID(p.deleteID)
-	t := c.Theme()
-
-	var title string
-	if session != nil {
-		title = session.Title
+	if session == nil {
+		return
 	}
 
-	props := components.ModalProps{
-		Open:  &p.deleteOpen,
-		Title: "删除会话",
-		Width: 420,
+	switch ui.AlertDialog(c, &p.deleteOpen, "删除会话",
+		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title), "取消", "删除") {
+	case 0:
+		p.deleteSession()
 	}
-	if session != nil {
-		props.Footer = func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.deleteOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:    "删除",
-				Variant:  components.ButtonDanger,
-				Disabled: len(p.sessions) <= 1,
-			}).Clicked() {
-				p.deleteSession()
-			}
-		}
-	}
-
-	components.Modal(c, props, func() {
-		if session == nil {
-			return
-		}
-		ui.Text(c, fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", title)).
-			FontSize(13).
-			TextColor(t.TextMuted)
-	})
 }
 
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	t := c.Theme()
-
-	components.Modal(c, components.ModalProps{
-		Open:  &p.deleteMessageOpen,
-		Title: "删除消息",
-		Width: 420,
-		Footer: func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.deleteMessageOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   "删除",
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				p.deleteMessage()
-			}
-		},
-	}, func() {
-		ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
-			FontSize(13).
-			TextColor(t.TextMuted)
-	})
+	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") {
+	case 0:
+		p.deleteMessage()
+	}
 }
 
 // send 用输入框里的草稿发送，供按钮调用。

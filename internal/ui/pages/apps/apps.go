@@ -56,7 +56,6 @@ func New(svc contract.AppCatalog, hooks Hooks) *Page {
 		svc:       svc,
 		hooks:     hooks,
 		sortLabel: sortOptions[0],
-		keepData:  true,
 	}
 	p.reload()
 	return p
@@ -69,7 +68,7 @@ func (p *Page) View(c *ui.Context) {
 		header := ui.Row(c).
 			FillWidth().
 			Background(t.Surface).
-			Radius(t.Radius).
+			Radius(theme.Radius).
 			Padding(t.Space(3)).
 			AlignItems(ui.Center).
 			Justify(ui.SpaceBetween).
@@ -151,7 +150,7 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 		Fill().
 		Padding(t.Space(3)).
 		Gap(t.Space(3)).
-		Radius(t.Radius).
+		Radius(theme.Radius).
 		Background(t.Surface).
 		Cursor(ui.Cursor(ui.CursorPointer)).
 		AlignItems(ui.Center)
@@ -239,7 +238,6 @@ func (p *Page) detailDrawer(c *ui.Context) {
 			}).Clicked() {
 				p.detailOpen = false
 				p.uninstallID = a.ID
-				p.keepData = true
 				p.uninstallOpen = true
 			}
 
@@ -342,93 +340,33 @@ func (p *Page) toolRow(c *ui.Context, appID string, tool contract.AppTool) {
 
 func (p *Page) uninstallModal(c *ui.Context) {
 	app := p.appByID(p.uninstallID)
-	t := c.Theme()
-
-	var name string
-	if app != nil {
-		name = app.DisplayName
+	if app == nil {
+		return
 	}
 
-	// 关闭状态下也要构建，动画锚点才能停在 0，首次打开才有过渡。
-	props := components.ModalProps{
-		Open:  &p.uninstallOpen,
-		Title: "卸载应用",
-		Width: 440,
+	switch ui.AlertDialog(c, &p.uninstallOpen, "卸载应用",
+		fmt.Sprintf("确定卸载「%s」吗？保留数据卸载会留下应用设置，直接卸载会连应用数据一起删除且无法恢复。", app.DisplayName),
+		"取消", "保留数据卸载", "直接卸载") {
+	case 1:
+		p.keepData = true
+		p.uninstall()
+	case 2:
+		p.keepData = false
+		p.uninstall()
 	}
-	if app != nil {
-		props.Footer = func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.uninstallOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   "卸载",
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				p.uninstall()
-			}
-		}
-	}
-
-	components.Modal(c, props, func() {
-		if app == nil {
-			return
-		}
-		ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后，该应用的能力会立即从助理中移除。", name)).
-			FontSize(13).
-			TextColor(t.TextMuted)
-
-		keep := p.keepData
-		if ui.Checkbox(c, &keep, "保留应用数据").Changed() {
-			p.keepData = keep
-		}
-		if !p.keepData {
-			ui.Text(c, "应用数据将被删除且无法恢复。").FontSize(12).TextColor(t.Danger)
-		}
-	})
 }
 
 func (p *Page) clearModal(c *ui.Context) {
 	app := p.appByID(p.clearID)
-	t := c.Theme()
-
-	var name string
-	if app != nil {
-		name = app.DisplayName
+	if app == nil {
+		return
 	}
 
-	props := components.ModalProps{
-		Open:  &p.clearOpen,
-		Title: "清除应用数据",
-		Width: 420,
+	switch ui.AlertDialog(c, &p.clearOpen, "清除应用数据",
+		fmt.Sprintf("确定清除「%s」的应用数据吗？清除后无法恢复，应用本身会保留。", app.DisplayName), "取消", "清除") {
+	case 0:
+		p.clearData()
 	}
-	if app != nil {
-		props.Footer = func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.clearOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   "清除",
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				p.clearData()
-			}
-		}
-	}
-
-	components.Modal(c, props, func() {
-		if app == nil {
-			return
-		}
-		ui.Text(c, fmt.Sprintf("确定清除「%s」的应用数据吗？清除后无法恢复，应用本身会保留。", name)).
-			FontSize(13).
-			TextColor(t.TextMuted)
-	})
 }
 
 func (p *Page) installModal(c *ui.Context) {

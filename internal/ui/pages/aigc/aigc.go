@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"bowknot-workbench/internal/ui/components"
+	"bowknot-workbench/internal/ui/theme"
 )
 
 // navItem 是 AIGC 侧边栏的一个菜单项，path 同时是桌面端内部的选中标识。
@@ -54,7 +55,9 @@ func New() *Page {
 }
 
 func (p *Page) View(c *ui.Context) {
-	ui.Row(c).Fill().Gap(12).Children(func() {
+	t := c.Theme()
+
+	ui.Row(c).Fill().Gap(t.Space(3)).Children(func() {
 		p.sidebar(c)
 		p.placeholder(c)
 	})
@@ -63,64 +66,69 @@ func (p *Page) View(c *ui.Context) {
 func (p *Page) sidebar(c *ui.Context) {
 	t := c.Theme()
 
-	ui.Column(c).
+	panel := ui.Column(c).
 		Width(200).
 		FillHeight().
 		Shrink(0).
 		Background(t.Surface).
-		Radius(10).
+		Radius(theme.Radius).
 		BorderWidth(1).
-		BorderColor(t.Border).
-		Children(func() {
-			// 头部：品牌图标 + 标题，与 Web 端一致。
-			ui.Row(c).
-				FillWidth().
-				Shrink(0).
-				Padding(10, 12).
-				Gap(8).
-				AlignItems(ui.Center).
-				BorderWidth(0, 0, 1, 0).
-				BorderColor(t.Border).
-				Children(func() {
-					ui.Box(c).
-						Width(32).
-						Height(32).
-						Radius(10).
-						Background(t.Accent.Alpha(0.1)).
-						TextColor(t.Accent).
-						AlignItems(ui.Center).
-						Justify(ui.Center).
-						Children(func() {
-							components.Icon(c, components.IconSparkles, 17)
-						})
-					ui.Column(c).Gap(1).Children(func() {
-						ui.Text(c, "AIGC").FontSize(14).Bold()
-						ui.Text(c, "创作工作台").FontSize(11).TextColor(t.TextMuted)
-					})
-				})
+		BorderColor(t.Border)
+	theme.CardShadow.Apply(c, panel)
 
-			ui.Column(c).Grow(1).FillWidth().Padding(6).Gap(2).Children(func() {
-				for _, group := range navGroups {
-					if group.Label != "" {
-						ui.Text(c, group.Label).FontSize(11).TextColor(t.TextMuted).Padding(8, 10, 4, 10)
-					}
-					for _, item := range group.Items {
-						p.navRow(c, item)
-					}
-				}
+	panel.Children(func() {
+		// 头部：品牌图标 + 标题，与 Web 端一致。
+		ui.Row(c).
+			FillWidth().
+			Shrink(0).
+			Padding(t.Space(2), t.Space(3)).
+			Gap(t.Space(2)).
+			AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).
+			BorderColor(t.Border).
+			Children(func() {
+				ui.Box(c).
+					Width(32).
+					Height(32).
+					Radius(theme.RadiusSM).
+					Background(t.Accent.Alpha(0.1)).
+					TextColor(t.Accent).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					Children(func() {
+						components.Icon(c, components.IconSparkles, 17)
+					})
+				ui.Column(c).Gap(1).Children(func() {
+					ui.Text(c, "AIGC").FontSize(14).Bold()
+					ui.Text(c, "创作工作台").FontSize(11).TextColor(t.TextMuted)
+				})
 			})
 
-			// 底部任务入口，角标在任务服务接入前不显示。
-			ui.Row(c).
-				FillWidth().
-				Shrink(0).
-				Padding(6).
-				BorderWidth(1, 0, 0, 0).
-				BorderColor(t.Border).
-				Children(func() {
-					p.navRow(c, navItem{Path: "tasks", Label: "任务", Icon: components.IconTasks})
-				})
+		ui.Column(c).Grow(1).FillWidth().Padding(t.Space(1.5)).Gap(t.Space(0.5)).Children(func() {
+			for _, group := range navGroups {
+				if group.Label != "" {
+					ui.Text(c, group.Label).
+						FontSize(11).
+						TextColor(t.TextMuted).
+						Padding(t.Space(2), t.Space(2.5), t.Space(1), t.Space(2.5))
+				}
+				for _, item := range group.Items {
+					p.navRow(c, item)
+				}
+			}
 		})
+
+		// 底部任务入口，角标在任务服务接入前不显示。
+		ui.Row(c).
+			FillWidth().
+			Shrink(0).
+			Padding(t.Space(1.5)).
+			BorderWidth(1, 0, 0, 0).
+			BorderColor(t.Border).
+			Children(func() {
+				p.navRow(c, navItem{Path: "tasks", Label: "任务", Icon: components.IconTasks})
+			})
+	})
 }
 
 func (p *Page) navRow(c *ui.Context, item navItem) {
@@ -130,9 +138,9 @@ func (p *Page) navRow(c *ui.Context, item navItem) {
 	btn := ui.ButtonBase(c).
 		FillWidth().
 		Height(32).
-		PaddingX(10).
-		Radius(8).
-		Gap(8).
+		PaddingX(t.Space(2.5)).
+		Radius(theme.RadiusSM).
+		Gap(t.Space(2)).
 		AlignItems(ui.Center).
 		FontSize(13)
 
@@ -159,7 +167,7 @@ func (p *Page) navRow(c *ui.Context, item navItem) {
 				Height(18).
 				Radius(9).
 				Background(t.Accent).
-				PaddingX(5).
+				PaddingX(t.Space(1.25)).
 				AlignItems(ui.Center).
 				Justify(ui.Center).
 				Children(func() {
@@ -178,7 +186,7 @@ func (p *Page) placeholder(c *ui.Context) {
 	t := c.Theme()
 
 	title, icon := p.currentMeta()
-	ui.Column(c).Grow(1).FillHeight().AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
+	ui.Column(c).Grow(1).FillHeight().AlignItems(ui.Center).Justify(ui.Center).Gap(t.Space(3)).Children(func() {
 		ui.Box(c).
 			Width(80).
 			Height(80).

@@ -29,12 +29,12 @@ type MessageViewProps struct {
 
 // MessageView 是对话消息的统一渲染入口：外壳、正文、元信息与操作都在这里。
 // 后续接入工具调用、思维链等正文形态，只改本文件的 messageBody 即可，
-// 所有对话页面自动保持一致。
-func MessageView(c *ui.Context, p MessageViewProps) {
+// 所有对话页面自动保持一致。返回消息行元素，便于做提问导航等定位。
+func MessageView(c *ui.Context, p MessageViewProps) ui.Element {
 	m := p.Message
 	isUser := m.Role == contract.RoleUser
 
-	MessageItem(c, MessageItemProps{
+	return MessageItem(c, MessageItemProps{
 		IsUser: isUser,
 		Avatar: func(c *ui.Context) {
 			Avatar(c, p.AvatarText, 32)

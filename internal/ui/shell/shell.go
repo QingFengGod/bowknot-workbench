@@ -238,7 +238,7 @@ func (s *Shell) rail(c *ui.Context) {
 		FillHeight().
 		Padding(4).
 		GapY(4).
-		Radius(t.Radius).
+		Radius(theme.Radius).
 		Background(t.Surface).
 		AlignItems(ui.Center)
 

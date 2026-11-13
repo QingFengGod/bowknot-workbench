@@ -44,7 +44,7 @@ func Composer(c *ui.Context, p ComposerProps) {
 			box := ui.Column(c).
 				FillWidth().
 				Padding(t.Space(3)).
-				Radius(t.Radius).
+				Radius(theme.Radius).
 				Background(t.Surface).
 				BorderWidth(1).
 				BorderColor(t.Border).

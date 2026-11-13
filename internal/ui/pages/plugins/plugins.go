@@ -9,6 +9,7 @@ import (
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/ui/components"
 	"bowknot-workbench/internal/ui/format"
+	"bowknot-workbench/internal/ui/theme"
 )
 
 // Page 是插件页的原生实现。
@@ -46,7 +47,17 @@ func (p *Page) View(c *ui.Context) {
 	t := c.Theme()
 	pluginCount := len(p.plugins)
 	ui.Column(c).Fill().Background(t.Background).Gap(t.Space(3)).Children(func() {
-		ui.Row(c).FillWidth().Background(t.Surface).Radius(t.Radius).Padding(t.Space(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(t.Space(3)).Children(func() {
+		header := ui.Row(c).
+			FillWidth().
+			Background(t.Surface).
+			Radius(theme.Radius).
+			Padding(t.Space(3)).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Gap(t.Space(3))
+		theme.NormalShadow.Apply(c, header)
+
+		header.Children(func() {
 			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "插件").FontSize(22).Bold()
 				if pluginCount >= 0 {
@@ -105,9 +116,9 @@ func (p *Page) View(c *ui.Context) {
 
 func (p *Page) gridView(c *ui.Context, list []contract.Plugin) {
 	p.grid.Key = func(i int) any { return list[i].ID }
-	ui.GridView(c, &p.grid, len(list), 260, 116, func(i int) {
+	ui.GridView(c, &p.grid, len(list), 260, 100, func(i int) {
 		p.pluginCard(c, list[i])
-	}).Grow(1)
+	}).Grow(1).Margin(-4, 0, 0, 0)
 }
 
 func (p *Page) pluginCard(c *ui.Context, plugin contract.Plugin) {
@@ -115,21 +126,17 @@ func (p *Page) pluginCard(c *ui.Context, plugin contract.Plugin) {
 
 	card := ui.Row(c).
 		Fill().
-		Padding(14).
-		Gap(12).
-		Radius(12).
+		Padding(t.Space(3)).
+		Gap(t.Space(3)).
+		Radius(theme.Radius).
 		Background(t.Surface).
-		BorderWidth(1).
+		Cursor(ui.Cursor(ui.CursorPointer)).
 		AlignItems(ui.Center)
 
-	if card.Hovered() {
-		card.BorderColor(t.Accent)
-	} else {
-		card.BorderColor(t.Border)
-	}
+	theme.CardShadow.Apply(c, card)
 
 	card.Children(func() {
-		components.Avatar(c, plugin.IconText, 42)
+		components.Avatar(c, plugin.IconText, 56)
 
 		ui.Column(c).Grow(1).Gap(3).Children(func() {
 			ui.Text(c, plugin.Name).FontSize(14).Bold().MaxLines(1)
@@ -171,22 +178,21 @@ func (p *Page) detailModal(c *ui.Context) {
 		Title: "插件详情",
 		Width: 480,
 		Footer: func() {
-			ui.Row(c).FillWidth().Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "卸载",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.detailOpen = false
-					p.uninstallID = pl.ID
-					p.uninstallOpen = true
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "关闭",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.detailOpen = false
-				}
-			})
+			if components.Button(c, components.ButtonProps{
+				Label:   "卸载",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.detailOpen = false
+				p.uninstallID = pl.ID
+				p.uninstallOpen = true
+			}
+
+			if components.Button(c, components.ButtonProps{
+				Label:   "关闭",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.detailOpen = false
+			}
 		},
 	}, func() {
 		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
@@ -212,15 +218,7 @@ func (p *Page) detailModal(c *ui.Context) {
 			ui.Text(c, "该插件不提供工具").FontSize(12).TextColor(t.TextMuted)
 		}
 		for _, tool := range pl.Tools {
-			ui.Column(c).Gap(2).Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, tool.Name).FontSize(12).Bold()
-					if tool.Dangerous {
-						components.Chip(c, "执行前确认", components.ToneDanger)
-					}
-				})
-				ui.Text(c, tool.Description).FontSize(12).TextColor(t.TextMuted)
-			})
+			p.toolRow(c, tool)
 		}
 
 		ui.Divider(c)
@@ -295,44 +293,38 @@ func (p *Page) installModal(c *ui.Context) {
 
 func (p *Page) uninstallModal(c *ui.Context) {
 	plugin := p.pluginByID(p.uninstallID)
+	if plugin == nil {
+		return
+	}
+
+	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	switch ui.AlertDialog(c, &p.uninstallOpen, "卸载插件",
+		fmt.Sprintf("确定卸载「%s」吗？卸载后所有 Agent 将无法再调用该插件的工具。", plugin.Name), "取消", "卸载") {
+	case 0:
+		p.uninstall()
+	}
+}
+
+func (p *Page) toolRow(c *ui.Context, tool contract.PluginTool) {
 	t := c.Theme()
 
-	var name string
-	if plugin != nil {
-		name = plugin.Name
-	}
-
-	// 关闭状态下也要构建，动画锚点才能停在 0，首次打开才有过渡。
-	props := components.ModalProps{
-		Open:  &p.uninstallOpen,
-		Title: "卸载插件",
-		Width: 420,
-	}
-	if plugin != nil {
-		props.Footer = func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.uninstallOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   "确认卸载",
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				p.uninstall()
-			}
-		}
-	}
-
-	components.Modal(c, props, func() {
-		if plugin == nil {
-			return
-		}
-		ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后所有 Agent 将无法再调用该插件的工具。", name)).
-			FontSize(13).
-			TextColor(t.TextMuted)
-	})
+	ui.Box(c).
+		FillWidth().
+		Padding(10).
+		Radius(8).
+		BorderWidth(1).
+		BorderColor(t.Border).
+		Children(func() {
+			ui.Column(c).Gap(2).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, tool.Name).FontSize(12).Bold().MaxLines(1)
+					if tool.Dangerous {
+						components.Chip(c, "执行前确认", components.ToneDanger)
+					}
+				})
+				ui.Text(c, tool.Description).FontSize(12).TextColor(t.TextMuted)
+			})
+		})
 }
 
 func (p *Page) openDetail(id string) {

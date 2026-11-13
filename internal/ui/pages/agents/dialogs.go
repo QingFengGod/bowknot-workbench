@@ -296,51 +296,24 @@ func (p *Page) submitGroup() {
 
 // deleteModal 确认删除 Agent 或解散群聊。
 func (p *Page) deleteModal(c *ui.Context) {
-	t := c.Theme()
-
 	item := p.panelItemByKey(p.deleteKey)
 	if item == nil {
-		p.deleteOpen = false
+		return
 	}
 
 	title, content, okLabel := "删除 Agent", "", "删除"
-	if item != nil {
+	if item.kind == contract.ItemKindAgent {
 		content = fmt.Sprintf("确定删除「%s」吗？该 Agent 的会话记录将一并移除。", item.name)
-		if item.kind == contract.ItemKindGroup {
-			title, content, okLabel = "解散群聊",
-				fmt.Sprintf("确定解散「%s」吗？解散后群聊消息将无法恢复。", item.name), "解散"
-		}
+	} else {
+		title, content, okLabel = "解散群聊",
+			fmt.Sprintf("确定解散「%s」吗？解散后群聊消息将无法恢复。", item.name), "解散"
 	}
 
-	props := components.ModalProps{
-		Open:  &p.deleteOpen,
-		Title: title,
-		Width: 420,
+	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	switch ui.AlertDialog(c, &p.deleteOpen, title, content, okLabel, "取消") {
+	case 0:
+		p.removeItem(*item)
 	}
-	if item != nil {
-		props.Footer = func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.deleteOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   okLabel,
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				p.removeItem(*item)
-				p.deleteOpen = false
-			}
-		}
-	}
-
-	components.Modal(c, props, func() {
-		if item == nil {
-			return
-		}
-		ui.Text(c, content).FontSize(13).TextColor(t.TextMuted)
-	})
 }
 
 func (p *Page) removeItem(item panelItem) {
@@ -370,42 +343,22 @@ func (p *Page) removeItem(item panelItem) {
 
 // deleteMessageModal 确认删除单条消息。
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	t := c.Theme()
+	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	if ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "删除", "取消") != 0 {
+		return
+	}
 
-	components.Modal(c, components.ModalProps{
-		Open:  &p.deleteMessageOpen,
-		Title: "删除消息",
-		Width: 420,
-		Footer: func() {
-			if components.Button(c, components.ButtonProps{
-				Label:   "取消",
-				Variant: components.ButtonSecondary,
-			}).Clicked() {
-				p.deleteMessageOpen = false
-			}
-			if components.Button(c, components.ButtonProps{
-				Label:   "删除",
-				Variant: components.ButtonDanger,
-			}).Clicked() {
-				conv := p.conversationID()
-				if p.svc != nil && conv != "" {
-					if p.streams[conv] == p.deleteMessageID {
-						p.stop(conv)
-					}
-					if err := p.svc.DeleteMessage(conv, p.deleteMessageID); err != nil {
-						p.sendErr = err.Error()
-					}
-				}
-				p.deleteMessageOpen = false
-				p.deleteMessageID = ""
-				p.reloadMessages()
-			}
-		},
-	}, func() {
-		ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
-			FontSize(13).
-			TextColor(t.TextMuted)
-	})
+	conv := p.conversationID()
+	if p.svc != nil && conv != "" {
+		if p.streams[conv] == p.deleteMessageID {
+			p.stop(conv)
+		}
+		if err := p.svc.DeleteMessage(conv, p.deleteMessageID); err != nil {
+			p.sendErr = err.Error()
+		}
+	}
+	p.deleteMessageID = ""
+	p.reloadMessages()
 }
 
 // ---------- 查找 ----------

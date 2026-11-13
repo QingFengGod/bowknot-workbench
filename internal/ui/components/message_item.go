@@ -19,7 +19,8 @@ type MessageItemProps struct {
 
 // MessageItem 是消息列表的一行：左右对齐、头像位、气泡外观与悬浮操作栏。
 // 只负责布局与交互，具体内容由插槽决定，便于后续接入非 markdown 的消息形态。
-func MessageItem(c *ui.Context, p MessageItemProps) {
+// 返回行的根元素，供调用方做 ScrollIntoView 等定位。
+func MessageItem(c *ui.Context, p MessageItemProps) ui.Element {
 	t := c.Theme()
 
 	item := ui.Column(c).FillWidth().Gap(3)
@@ -80,4 +81,5 @@ func MessageItem(c *ui.Context, p MessageItemProps) {
 			})
 		})
 	})
+	return item
 }

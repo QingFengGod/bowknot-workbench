@@ -70,7 +70,6 @@ func For(c *ui.Context, mode Mode) *ui.Theme {
 	th.Success = ui.Hex("#12b76a")
 	th.Selection = Brand.Alpha(0.18)
 	th.Focus = Brand
-	th.Radius = Radius
 	return &th
 }
 

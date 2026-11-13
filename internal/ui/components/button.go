@@ -40,11 +40,11 @@ func Button(c *ui.Context, p ButtonProps) ui.Element {
 		b.TextColor(t.AccentText).BorderWidth(0)
 	case ButtonDanger:
 		if b.Hovered() {
-			b.Background(t.Danger.Alpha(0.14))
+			b.Background(t.Danger.Alpha(0.8))
 		} else {
-			b.Background(t.Surface)
+			b.Background(t.Danger)
 		}
-		b.TextColor(t.Danger).BorderWidth(1).BorderColor(t.Border)
+		b.TextColor(ui.Hex("#fff")).BorderWidth(1).BorderColor(t.Border)
 	case ButtonGhost:
 		b.Background(ui.Transparent).TextColor(t.TextMuted).BorderWidth(0)
 	default:
