@@ -8,17 +8,11 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/ui/components"
 	"bowknot-workbench/internal/ui/format"
 )
-
-// markdownOptions 沿用助手页的正文行高。
-var markdownOptions = &markdown.Options{
-	Theme: &markdown.Theme{LineHeight: 1.7},
-}
 
 // Hooks 是页面依赖的外部动作，由壳层注入。
 type Hooks struct {
@@ -36,6 +30,8 @@ type Page struct {
 	groups     []contract.AgentGroup
 	models     []contract.ChatModel
 	modelLabel string
+	// modelMenuOpen 是模型选择面板的开关，指针每帧指向同一地址。
+	modelMenuOpen bool
 
 	activeKey       string // "agent:xxx" 或 "group:yyy"
 	sessions        []contract.AgentSession
@@ -53,7 +49,8 @@ type Page struct {
 	sessionScroll     ui.ScrollState
 	sessionsCollapsed bool
 	// follow 为 true 时消息列表贴着底部，用户上滚后关闭，回到底部再恢复。
-	follow   bool
+	follow bool
+	// lastMaxY 记录上一帧的最大滚动距离，用来判断内容是否变高。
 	lastMaxY float32
 
 	// streams 记录正在生成的会话与消息。
@@ -265,227 +262,77 @@ func (p *Page) messageList(c *ui.Context) {
 }
 
 func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) {
-	isUser := m.Role == contract.RoleUser
-
-	item := ui.Column(c).FillWidth().Gap(3)
-	if isUser {
-		item.AlignItems(ui.End)
-	}
-	hovered := item.Hovered()
-
-	item.Children(func() {
-		row := ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Start)
-		if isUser {
-			row.Justify(ui.End)
-		}
-		row.Children(func() {
-			if !isUser {
-				if m.SenderAvatar != "" {
-					components.Avatar(c, m.SenderAvatar, 32)
-				} else {
-					components.Avatar(c, "助", 32)
-				}
-			}
-
-			column := ui.Column(c).Gap(3)
-			if isUser {
-				column.MaxWidth(620).AlignItems(ui.End)
-			} else {
-				column.Grow(1).MaxWidth(760)
-			}
-
-			column.Children(func() {
-				if m.SenderName != "" {
-					ui.Text(c, m.SenderName).FontSize(11).Bold().TextColor(c.Theme().TextMuted)
-				}
-				p.bubble(c, m, isUser)
-				p.messageMeta(c, m, isUser)
-				p.messageActions(c, m, hovered)
-			})
-		})
-	})
-}
-
-func (p *Page) bubble(c *ui.Context, m contract.ChatMessage, isUser bool) {
-	t := c.Theme()
-
-	bubble := ui.Column(c).Radius(12).Gap(0)
-	if isUser {
-		bubble.Padding(10, 14).Background(t.Accent.Alpha(0.1))
-	} else {
-		bubble.FillWidth()
+	avatar := "助"
+	if m.SenderAvatar != "" {
+		avatar = m.SenderAvatar
 	}
 
-	bubble.Children(func() {
-		if m.Status == contract.MessageStreaming {
-			markdown.Stream(c, m.Content, markdownOptions)
-		} else {
-			markdown.View(c, m.Content, markdownOptions)
-		}
-
-		switch m.Status {
-		case contract.MessageStreaming:
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Margin(8, 0, 0, 0).Children(func() {
-				ui.Box(c).Width(6).Height(6).Radius(3).Background(t.Accent)
-				ui.Text(c, "正在生成").FontSize(11).TextColor(t.TextMuted)
-				if textButton(c, "停止生成", false).Clicked() {
-					p.stop(p.conversationID())
-				}
-			})
-		case contract.MessageFailed:
-			errText := m.Error
-			if errText == "" {
-				errText = "生成失败，请稍后重试"
-			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Margin(8, 0, 0, 0).Children(func() {
-				ui.Text(c, errText).FontSize(11).TextColor(t.Danger).MaxLines(2)
-				if textButton(c, "重试", false).Clicked() {
-					p.regenerate(m.ID)
-				}
-			})
-		case contract.MessageStopped:
-			ui.Text(c, "已停止生成").FontSize(11).TextColor(t.TextMuted).Margin(8, 0, 0, 0)
-		}
-	})
-}
-
-func (p *Page) messageMeta(c *ui.Context, m contract.ChatMessage, isUser bool) {
-	t := c.Theme()
-
-	row := ui.Row(c).Gap(8).AlignItems(ui.Center)
-	if isUser {
-		row.Justify(ui.End)
-	}
-	row.Children(func() {
-		ui.Text(c, format.Clock(m.CreatedAt)).FontSize(11).TextColor(t.TextMuted)
-		if m.MemoryWritten {
-			ui.Text(c, "已记住").FontSize(11).TextColor(t.Accent)
-		}
-	})
-}
-
-func (p *Page) messageActions(c *ui.Context, m contract.ChatMessage, hovered bool) {
-	lastAssistant := m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID()
-
-	row := ui.Row(c).Gap(2).AlignItems(ui.Center)
-	if m.Role == contract.RoleUser {
-		row.Justify(ui.End)
-	}
-	if !hovered {
-		row.Opacity(0).IgnoreInput(true)
-	}
-
-	row.Children(func() {
-		if textButton(c, "复制", false).Clicked() && strings.TrimSpace(m.Content) != "" {
-			c.Services().WriteClipboard(m.Content)
-			c.Toast("已复制")
-		}
-		if lastAssistant && m.Status != contract.MessageStreaming {
-			if textButton(c, "重答", false).Clicked() {
-				p.regenerate(m.ID)
-			}
-		}
-		if textButton(c, "删除", true).Clicked() {
+	components.MessageView(c, components.MessageViewProps{
+		Message:    m,
+		AvatarText: avatar,
+		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
+		OnStop:     func() { p.stop(p.conversationID()) },
+		OnRetry:    func() { p.regenerate(m.ID) },
+		OnDelete: func() {
 			p.deleteMessageID = m.ID
 			p.deleteMessageOpen = true
-		}
+		},
 	})
 }
 
 func (p *Page) composer(c *ui.Context) {
-	t := c.Theme()
 	streaming := p.streamingActive()
 
-	ui.Column(c).
-		FillWidth().
-		Shrink(0).
-		Padding(10, 16).
-		Gap(8).
-		Background(t.Surface).
-		BorderWidth(1, 0, 0, 0).
-		BorderColor(t.Border).
-		Children(func() {
-			if p.sendErr != "" {
-				ui.Text(c, p.sendErr).FontSize(12).TextColor(t.Danger)
+	components.Composer(c, components.ComposerProps{
+		Draft:          &p.draft,
+		FocusRequested: &p.focusDraft,
+		Placeholder:    fmt.Sprintf("给 %s 发消息…", p.activeName()),
+		Error:          p.sendErr,
+		Submit:         p.sendText,
+		Cancel: func() {
+			if streaming {
+				p.stop(p.conversationID())
 			}
+		},
+		OnInput: func() {
+			p.sendErr = ""
+		},
+		Actions: func(c *ui.Context) {
+			t := c.Theme()
 
-			box := ui.Column(c).
-				FillWidth().
-				Padding(8, 10).
-				Radius(12).
-				Background(t.Background).
-				BorderWidth(1).
-				BorderColor(t.Border).
-				Gap(6)
-			if box.FocusWithin() {
-				box.BorderColor(t.Accent)
+			p.modelPicker(c)
+
+			if streaming {
+				stop := components.CircleButton(c, components.IconStop, t.Danger, t.AccentText, true)
+				if stop.Tooltip("停止生成").Clicked() {
+					p.stop(p.conversationID())
+				}
+				return
 			}
+			enabled := strings.TrimSpace(p.draft) != ""
+			send := components.CircleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
+			if send.Tooltip("发送").Clicked() && enabled {
+				p.send()
+			}
+		},
+	})
+}
 
-			box.Children(func() {
-				input := ui.TextAreaBase(c, &p.draft).
-					Placeholder(fmt.Sprintf("给 %s 发消息…", p.activeName())).
-					Lines(1, 8).
-					FillWidth().
-					FontSize(14)
-				input.OnTextKey(func(k ui.TextKey) bool {
-					if k.Key == ui.KeyEnter && k.Mods == 0 {
-						if p.sendText(k.Text()) {
-							k.SetText("")
-						}
-						return true
-					}
-					if k.Key == ui.KeyEscape && streaming {
-						p.stop(p.conversationID())
-						return true
-					}
-					return false
-				})
-				if input.Changed() {
-					p.sendErr = ""
-				}
-				if p.focusDraft {
-					input.Focus()
-					p.focusDraft = false
-				}
+// modelPicker 把页面的模型列表适配成选择器组件的选项。
+func (p *Page) modelPicker(c *ui.Context) {
+	options := make([]components.ModelOption, len(p.models))
+	for i, model := range p.models {
+		options[i] = components.ModelOption{Name: model.Name, Description: model.Description}
+	}
 
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-					modelMenu := ui.PopoverMenuButton(c, p.modelLabel, func(m *ui.Menu) {
-						m.MaxWidth(280)
-						for _, model := range p.models {
-							item := m.Item(model.Name).
-								Subtitle(model.Description).
-								Radio(model.Name == p.modelLabel)
-							if item.Chosen() {
-								p.modelLabel = model.Name
-							}
-						}
-					})
-					modelMenu.BorderWidth(0).
-						Background(ui.Transparent).
-						Height(26).
-						PaddingX(8).
-						Radius(6).
-						FontSize(12).
-						TextColor(t.TextMuted)
-					if modelMenu.Hovered() {
-						modelMenu.Background(t.SurfaceHover).TextColor(t.Text)
-					}
-
-					if streaming {
-						stop := circleButton(c, components.IconStop, t.Danger, t.AccentText, true)
-						if stop.Tooltip("停止生成").Clicked() {
-							p.stop(p.conversationID())
-						}
-					} else {
-						enabled := strings.TrimSpace(p.draft) != ""
-						send := circleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
-						if send.Tooltip("发送").Clicked() && enabled {
-							p.send()
-						}
-					}
-				})
-			})
-		})
+	components.ModelPicker(c, components.ModelPickerProps{
+		Options:  options,
+		Selected: p.modelLabel,
+		Open:     &p.modelMenuOpen,
+		OnSelect: func(name string) {
+			p.modelLabel = name
+		},
+	})
 }
 
 // panel 是左侧的 Agent / 群聊列表。
@@ -1008,7 +855,6 @@ func (p *Page) selectItem(key string) {
 	p.activeKey = key
 	p.sendErr = ""
 	p.follow = true
-	p.lastMaxY = 0
 	p.sessionsCollapsed = false
 
 	if agent := p.activeAgent(); agent != nil {
@@ -1283,31 +1129,35 @@ func (p *Page) conversationID() string {
 
 // ---------- 派生状态 ----------
 
-// followEnd 让列表贴底；内容变高不算用户上滚，只有滚动位置明显后退才停止跟随。
+// followEnd 让列表贴住底部；用户上滚后停止跟随，回到底部再恢复。
+// 只在内容变高时改写 Y：每帧都写 MaxFloat32 会被滚动容器判定为应用接管，
+// 持续取消滚轮的滑动，表现为贴底后要滚好几下才能离开底部。
 func (p *Page) followEnd() {
 	if p.chatScroll.MaxY <= 0 {
 		p.lastMaxY = 0
-		if p.follow {
-			p.chatScroll.Y = math.MaxFloat32
-		}
 		return
 	}
 
 	if !p.follow {
 		if p.chatScroll.Y >= p.chatScroll.MaxY-16 {
 			p.follow = true
+			p.chatScroll.Y = math.MaxFloat32
 			p.lastMaxY = p.chatScroll.MaxY
 		}
 		return
 	}
 
-	if p.lastMaxY > 0 && p.chatScroll.Y < p.lastMaxY-24 {
+	// 内容没有变高却离开了上一帧的底部，说明用户主动上滚；
+	// 内容收缩导致 MaxY 变小时不算。
+	if p.chatScroll.MaxY >= p.lastMaxY && p.chatScroll.Y < p.lastMaxY-1 {
 		p.follow = false
 		p.lastMaxY = p.chatScroll.MaxY
 		return
 	}
 
-	p.chatScroll.Y = math.MaxFloat32
+	if p.chatScroll.MaxY > p.lastMaxY {
+		p.chatScroll.Y = math.MaxFloat32
+	}
 	p.lastMaxY = p.chatScroll.MaxY
 }
 
@@ -1421,51 +1271,6 @@ func iconButton(c *ui.Context, name components.IconName) ui.Element {
 	}
 	b.Children(func() {
 		components.Icon(c, name, 13)
-	})
-	return b
-}
-
-func textButton(c *ui.Context, label string, danger bool) ui.Element {
-	t := c.Theme()
-
-	fg := t.TextMuted
-	bg := ui.Transparent
-	b := ui.ButtonBase(c).
-		Height(20).
-		PaddingX(6).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.Center)
-	if b.Hovered() {
-		if danger {
-			fg = t.Danger
-			bg = t.Danger.Alpha(0.1)
-		} else {
-			fg = t.Accent
-			bg = t.Accent.Alpha(0.1)
-		}
-	}
-	b.Background(bg).TextColor(fg)
-	b.Children(func() {
-		ui.Text(c, label).FontSize(11).TextColor(fg)
-	})
-	return b
-}
-
-func circleButton(c *ui.Context, name components.IconName, bg, fg ui.Color, enabled bool) ui.Element {
-	b := ui.ButtonBase(c).
-		Width(32).
-		Height(32).
-		Radius(16).
-		AlignItems(ui.Center).
-		Justify(ui.Center).
-		Background(bg).
-		TextColor(fg)
-	if !enabled {
-		b.Opacity(0.45).Disabled(true)
-	}
-	b.Children(func() {
-		components.Icon(c, name, 15)
 	})
 	return b
 }

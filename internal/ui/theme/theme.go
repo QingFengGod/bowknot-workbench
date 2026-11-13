@@ -74,6 +74,46 @@ func For(c *ui.Context, mode Mode) *ui.Theme {
 	return &th
 }
 
-// ShadowColor 是阴影基色（纯黑），使用时用 .Alpha() 控制深浅，
-// 例如卡片 theme.ShadowColor.Alpha(0.08)、浮层 theme.ShadowColor.Alpha(0.16)。
-var ShadowColor = ui.RGB(0, 0, 0)
+// Shadow 描述一层阴影的偏移、模糊、扩散，以及明暗两种颜色。
+// 用法：theme.PanelShadow.Apply(c, ui.Box(c)...)。
+// 阴影颜色无法交给 mygo 按明暗自动解析，因此由 Apply 依据当前主题挑选。
+type Shadow struct {
+	X, Y, Blur, Spread float32
+	// Light 用于明亮模式；Dark 用于暗黑模式，深色背景上纯黑不可见，改用灰色。
+	Light, Dark ui.Color
+}
+
+// Color 返回当前外观模式对应的阴影颜色。
+func (s Shadow) Color(c *ui.Context) ui.Color {
+	if c.Theme().Dark {
+		return s.Dark
+	}
+	return s.Light
+}
+
+// Apply 把阴影套在 el 上并原样返回，便于继续链式调用。
+func (s Shadow) Apply(c *ui.Context, el ui.Element) ui.Element {
+	return el.Shadow(s.X, s.Y, s.Blur, s.Spread, s.Color(c))
+}
+
+// 阴影 token，按层级从低到高。
+var (
+	// NormalShadow 用于悬浮的普通元素，如按钮、标签。
+	NormalShadow = Shadow{
+		Blur:  6,
+		Light: ui.RGBA(0, 0, 0, 0.12),
+		Dark:  ui.RGBA(0x9a, 0xa0, 0xa6, 0.36),
+	}
+	// CardShadow 用于内容卡片、标题栏、侧边导航等成块表面。
+	CardShadow = Shadow{
+		Y: 2, Blur: 10,
+		Light: ui.RGBA(0, 0, 0, 0.12),
+		Dark:  ui.RGBA(0x9a, 0xa0, 0xa6, 0.16),
+	}
+	// PanelShadow 用于弹窗、弹出菜单、抽屉等浮层。
+	PanelShadow = Shadow{
+		Y: 4, Blur: 16,
+		Light: ui.RGBA(0, 0, 0, 0.16),
+		Dark:  ui.RGBA(0x9a, 0xa0, 0xa6, 0.22),
+	}
+)

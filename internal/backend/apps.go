@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"bowknot-workbench/internal/contract"
 )
@@ -152,22 +151,6 @@ func (s *appCatalog) Install(preview contract.AppPreview) error {
 		InstalledAt: time.Now().UnixMilli(),
 		Tools:       manifest.Tools,
 	})
-	return nil
-}
-
-func (s *appCatalog) Rename(id string, displayName string) error {
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		return errors.New("应用显示名称不能为空")
-	}
-	if utf8.RuneCountInString(name) > 20 {
-		return errors.New("应用显示名称不能超过 20 个字符")
-	}
-	i := s.index(id)
-	if i < 0 {
-		return fmt.Errorf("应用不存在：%s", id)
-	}
-	s.apps[i].DisplayName = name
 	return nil
 }
 

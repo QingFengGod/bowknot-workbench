@@ -8,17 +8,11 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/ui/components"
-	"bowknot-workbench/internal/ui/format"
+	"bowknot-workbench/internal/ui/theme"
 )
-
-// markdownOptions 沿用默认主题，只把行高调得更接近 Web 端正文。
-var markdownOptions = &markdown.Options{
-	Theme: &markdown.Theme{LineHeight: 1.7},
-}
 
 // Hooks 是页面依赖的外部动作，由壳层注入。
 type Hooks struct {
@@ -34,6 +28,8 @@ type Page struct {
 	sessions   []contract.ChatSession
 	models     []contract.ChatModel
 	modelLabel string
+	// modelMenuOpen 是模型选择面板的开关，指针每帧指向同一地址。
+	modelMenuOpen bool
 
 	activeID string
 	messages []contract.ChatMessage
@@ -50,9 +46,11 @@ type Page struct {
 	chatScroll     ui.ScrollState
 	// groupOpen 保存会话分组的展开状态，指针由 CollapsibleBase 直接读写。
 	groupOpen map[string]*bool
+	// menuOpen 保存每个会话「更多」菜单的开关，按会话分别持有指针。
+	menuOpen map[string]*bool
 	// follow 为 true 时消息列表贴着底部，用户上滚后关闭，回到底部再恢复。
 	follow bool
-	// lastMaxY 记录上一帧的最大滚动距离，用来区分内容变高和用户主动上滚。
+	// lastMaxY 记录上一帧的最大滚动距离，用来判断内容是否变高。
 	lastMaxY float32
 
 	// streams 记录正在生成的会话与消息，支持不同会话各自流式输出。
@@ -74,10 +72,11 @@ type Page struct {
 // New 创建助手页。
 func New(svc contract.AssistantService, hooks Hooks) *Page {
 	p := &Page{
-		svc:     svc,
-		hooks:   hooks,
-		streams: map[string]string{},
-		follow:  true,
+		svc:      svc,
+		hooks:    hooks,
+		streams:  map[string]string{},
+		follow:   true,
+		menuOpen: map[string]*bool{},
 		groupOpen: map[string]*bool{
 			"pinned":    boolValue(true),
 			"today":     boolValue(true),
@@ -96,24 +95,36 @@ func New(svc contract.AssistantService, hooks Hooks) *Page {
 }
 
 func (p *Page) View(c *ui.Context) {
-	t := c.Theme()
-
 	if !p.shown {
 		p.shown = true
 		p.autoReply(p.activeID)
 	}
 
 	p.followEnd()
+	t := c.Theme()
 
-	ui.Row(c).Fill().Background(t.Background).Children(func() {
-		ui.Column(c).Grow(1).FillHeight().Children(func() {
-			p.header(c)
+	// 动画通道挂在常驻的根行上：侧栏收起后可以彻底退出布局，
+	// 既不会给父容器留下多余的 gap，也能保证再次展开时从 0 平滑过渡。
+	root := ui.Row(c).Gap(t.Space(3)).Fill()
+	target := float32(1)
+	if p.panelCollapsed {
+		target = 0
+	}
+	panelProgress := root.AnimateTo("side-panel", target, ui.Animation{
+		Duration: 180 * time.Millisecond,
+		Ease:     ui.EaseOut,
+	})
+
+	root.Children(func() {
+		leftPanel := ui.Column(c).Grow(1).Background(t.Surface).Radius(t.Radius).Clip().FillHeight().Children(func() {
+			p.header(c, panelProgress)
 			p.messageList(c)
 			p.composer(c)
 		})
+		theme.NormalShadow.Apply(c, leftPanel)
 
-		if !p.panelCollapsed {
-			p.panel(c)
+		if panelProgress > 0.001 {
+			p.panel(c, panelProgress)
 		}
 	})
 
@@ -122,22 +133,22 @@ func (p *Page) View(c *ui.Context) {
 	p.deleteMessageModal(c)
 }
 
-func (p *Page) header(c *ui.Context) {
+func (p *Page) header(c *ui.Context, panelProgress float32) {
 	t := c.Theme()
 	title := p.activeTitle()
 
 	ui.Row(c).
 		FillWidth().
-		Height(58).
 		Shrink(0).
-		Padding(0, 16).
+		PaddingX(t.Space(3)).
+		Height(58).
 		Background(t.Surface).
 		BorderWidth(0, 0, 1, 0).
 		BorderColor(t.Border).
 		AlignItems(ui.Center).
 		Justify(ui.SpaceBetween).
 		Children(func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 				components.Avatar(c, "助手", 32)
 				ui.Column(c).Gap(1).Children(func() {
 					ui.Text(c, title).FontSize(14).Bold().MaxLines(1).MaxWidth(360)
@@ -148,7 +159,20 @@ func (p *Page) header(c *ui.Context) {
 				}
 			})
 
-			toggle := iconButton(c, components.IconPanel)
+			toggle := ui.ButtonBase(c).
+				Width(22).
+				Height(22).
+				Radius(4).
+				AlignItems(ui.Center).
+				Justify(ui.Center).
+				TextColor(t.TextMuted)
+			if toggle.Hovered() {
+				toggle.Background(t.SurfacePressed).TextColor(t.Text)
+			}
+			// 图标随展开进度平滑旋转，收起时转到 180°。
+			toggle.Children(func() {
+				components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - panelProgress))
+			})
 			label := "收起会话列表"
 			if p.panelCollapsed {
 				label = "展开会话列表"
@@ -160,6 +184,8 @@ func (p *Page) header(c *ui.Context) {
 }
 
 func (p *Page) messageList(c *ui.Context) {
+	t := c.Theme()
+
 	ui.Column(c).Grow(1).Children(func() {
 		if len(p.messages) == 0 {
 			components.EmptyState(c, components.EmptyProps{
@@ -171,7 +197,7 @@ func (p *Page) messageList(c *ui.Context) {
 		}
 
 		ui.Scroll(c).Grow(1).TrackScroll(&p.chatScroll).Children(func() {
-			ui.Column(c).FillWidth().Padding(20, 24).Gap(18).Children(func() {
+			ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(3)).Children(func() {
 				for _, message := range p.messages {
 					p.messageItem(c, message)
 				}
@@ -192,272 +218,112 @@ func (p *Page) messageList(c *ui.Context) {
 }
 
 func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) {
-	isUser := m.Role == contract.RoleUser
-
-	item := ui.Column(c).FillWidth().Gap(3)
-	if isUser {
-		item.AlignItems(ui.End)
-	}
-	hovered := item.Hovered()
-
-	item.Children(func() {
-		row := ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Start)
-		if isUser {
-			row.Justify(ui.End)
-		}
-		row.Children(func() {
-			if !isUser {
-				components.Avatar(c, "助手", 32)
-			}
-
-			column := ui.Column(c).Gap(3)
-			if isUser {
-				column.MaxWidth(620).AlignItems(ui.End)
-			} else {
-				column.Grow(1).MaxWidth(760)
-			}
-
-			column.Children(func() {
-				p.bubble(c, m, isUser)
-				p.messageMeta(c, m, isUser)
-				p.messageActions(c, m, hovered)
-			})
-		})
-	})
-}
-
-func (p *Page) bubble(c *ui.Context, m contract.ChatMessage, isUser bool) {
-	t := c.Theme()
-
-	bubble := ui.Column(c).Radius(12).Gap(0)
-	if isUser {
-		bubble.Padding(10, 14).Background(t.Accent.Alpha(0.1))
-	} else {
-		bubble.FillWidth()
-	}
-
-	bubble.Children(func() {
-		if m.Status == contract.MessageStreaming {
-			markdown.Stream(c, m.Content, markdownOptions)
-		} else {
-			markdown.View(c, m.Content, markdownOptions)
-		}
-
-		switch m.Status {
-		case contract.MessageStreaming:
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Margin(8, 0, 0, 0).Children(func() {
-				ui.Box(c).Width(6).Height(6).Radius(3).Background(t.Accent)
-				ui.Text(c, "正在生成").FontSize(11).TextColor(t.TextMuted)
-				if textButton(c, "停止生成", false).Clicked() {
-					p.stop(m.ConversationID)
-				}
-			})
-		case contract.MessageFailed:
-			errText := m.Error
-			if errText == "" {
-				errText = "生成失败，请稍后重试"
-			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Margin(8, 0, 0, 0).Children(func() {
-				ui.Text(c, errText).FontSize(11).TextColor(t.Danger).MaxLines(2)
-				if textButton(c, "重试", false).Clicked() {
-					p.regenerate(m.ID)
-				}
-			})
-		case contract.MessageStopped:
-			ui.Text(c, "已停止生成").FontSize(11).TextColor(t.TextMuted).Margin(8, 0, 0, 0)
-		}
-	})
-}
-
-func (p *Page) messageMeta(c *ui.Context, m contract.ChatMessage, isUser bool) {
-	t := c.Theme()
-
-	row := ui.Row(c).Gap(8).AlignItems(ui.Center)
-	if isUser {
-		row.Justify(ui.End)
-	}
-	row.Children(func() {
-		ui.Text(c, format.Clock(m.CreatedAt)).FontSize(11).TextColor(t.TextMuted)
-		if m.Emotion != "" {
-			ui.Text(c, "情绪："+emotionLabel(m.Emotion)).FontSize(11).TextColor(t.TextMuted)
-		}
-		if m.MemoryWritten {
-			ui.Text(c, "已记住").FontSize(11).TextColor(t.Accent)
-		}
-	})
-}
-
-func (p *Page) messageActions(c *ui.Context, m contract.ChatMessage, hovered bool) {
-	lastAssistant := m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID()
-
-	row := ui.Row(c).Gap(2).AlignItems(ui.Center)
-	if m.Role == contract.RoleUser {
-		row.Justify(ui.End)
-	}
-	if !hovered {
-		row.Opacity(0).IgnoreInput(true)
-	}
-
-	row.Children(func() {
-		copyButton := textButton(c, "复制", false)
-		if copyButton.Clicked() && strings.TrimSpace(m.Content) != "" {
-			c.Services().WriteClipboard(m.Content)
-			c.Toast("已复制")
-		}
-		if lastAssistant && m.Status != contract.MessageStreaming {
-			if textButton(c, "重答", false).Clicked() {
-				p.regenerate(m.ID)
-			}
-		}
-		if textButton(c, "删除", true).Clicked() {
-			p.openDeleteMessage(m)
-		}
+	components.MessageView(c, components.MessageViewProps{
+		Message:    m,
+		AvatarText: "助手",
+		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
+		OnStop:     func() { p.stop(m.ConversationID) },
+		OnRetry:    func() { p.regenerate(m.ID) },
+		OnDelete:   func() { p.openDeleteMessage(m) },
 	})
 }
 
 func (p *Page) composer(c *ui.Context) {
-	t := c.Theme()
 	streamID := p.streams[p.activeID]
 
-	ui.Column(c).
-		FillWidth().
-		Shrink(0).
-		Padding(10, 16).
-		Gap(8).
-		Background(t.Surface).
-		BorderWidth(1, 0, 0, 0).
-		BorderColor(t.Border).
-		Children(func() {
-			if p.sendErr != "" {
-				ui.Text(c, p.sendErr).FontSize(12).TextColor(t.Danger)
+	components.Composer(c, components.ComposerProps{
+		Draft:          &p.draft,
+		FocusRequested: &p.focusDraft,
+		Placeholder:    "输入消息，Enter 发送，Shift+Enter 换行",
+		Error:          p.sendErr,
+		Submit:         p.sendText,
+		Cancel: func() {
+			if p.streaming(p.activeID) {
+				p.stop(p.activeID)
 			}
+		},
+		OnInput: func() {
+			p.sendErr = ""
+		},
+		Actions: func(c *ui.Context) {
+			t := c.Theme()
 
-			box := ui.Column(c).
-				FillWidth().
-				Padding(8, 10).
-				Radius(12).
-				Background(t.Background).
-				BorderWidth(1).
-				BorderColor(t.Border).
-				Gap(6)
-			if box.FocusWithin() {
-				box.BorderColor(t.Accent)
+			p.modelPicker(c)
+
+			if streamID != "" {
+				stop := components.CircleButton(c, components.IconStop, t.Danger, t.AccentText, true)
+				if stop.Tooltip("停止生成").Clicked() {
+					p.stop(p.activeID)
+				}
+				return
 			}
-
-			box.Children(func() {
-				input := ui.TextAreaBase(c, &p.draft).
-					Placeholder("输入消息，Enter 发送，Shift+Enter 换行").
-					Lines(1, 8).
-					FillWidth().
-					FontSize(14)
-				input.OnTextKey(func(k ui.TextKey) bool {
-					if k.Key == ui.KeyEnter && k.Mods == 0 {
-						if p.sendText(k.Text()) {
-							k.SetText("")
-						}
-						return true
-					}
-					if k.Key == ui.KeyEscape && p.streaming(p.activeID) {
-						p.stop(p.activeID)
-						return true
-					}
-					return false
-				})
-				if input.Changed() {
-					p.sendErr = ""
-				}
-				if p.focusDraft {
-					input.Focus()
-					p.focusDraft = false
-				}
-
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-					modelMenu := ui.PopoverMenuButton(c, p.modelLabel, func(m *ui.Menu) {
-						m.MaxWidth(280)
-						for _, model := range p.models {
-							item := m.Item(model.Name).
-								Subtitle(model.Description).
-								Radio(model.Name == p.modelLabel)
-							if item.Chosen() {
-								p.modelLabel = model.Name
-							}
-						}
-					})
-					modelMenu.BorderWidth(0).
-						Background(ui.Transparent).
-						Height(26).
-						PaddingX(8).
-						Radius(6).
-						FontSize(12).
-						TextColor(t.TextMuted)
-					if modelMenu.Hovered() {
-						modelMenu.Background(t.SurfaceHover).TextColor(t.Text)
-					}
-
-					if streamID != "" {
-						stop := circleButton(c, components.IconStop, t.Danger, t.AccentText, true)
-						if stop.Tooltip("停止生成").Clicked() {
-							p.stop(p.activeID)
-						}
-					} else {
-						enabled := strings.TrimSpace(p.draft) != ""
-						send := circleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
-						if send.Tooltip("发送").Clicked() && enabled {
-							p.send()
-						}
-					}
-				})
-			})
-		})
+			enabled := strings.TrimSpace(p.draft) != ""
+			send := components.CircleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
+			if send.Tooltip("发送").Clicked() && enabled {
+				p.send()
+			}
+		},
+	})
 }
 
-func (p *Page) panel(c *ui.Context) {
+// modelPicker 把页面的模型列表适配成选择器组件的选项。
+func (p *Page) modelPicker(c *ui.Context) {
+	options := make([]components.ModelOption, len(p.models))
+	for i, model := range p.models {
+		options[i] = components.ModelOption{Name: model.Name, Description: model.Description}
+	}
+
+	components.ModelPicker(c, components.ModelPickerProps{
+		Options:  options,
+		Selected: p.modelLabel,
+		Open:     &p.modelMenuOpen,
+		OnSelect: func(name string) {
+			p.modelLabel = name
+		},
+	})
+}
+
+// panel 是右侧会话列表：外层按展开进度收窄并裁剪，内层保持固定宽度，
+// 避免过渡中文字重新换行。宽度与间距都由本页控制，不收进组件。
+func (p *Page) panel(c *ui.Context, progress float32) {
 	t := c.Theme()
+	const panelWidth float32 = 300
 
-	ui.Column(c).
-		Width(300).
-		FillHeight().
-		Shrink(0).
-		Background(t.Surface).
-		BorderWidth(0, 0, 0, 1).
-		BorderColor(t.Border).
-		Children(func() {
-			ui.Row(c).
-				FillWidth().
-				Height(58).
-				Padding(0, 12).
-				BorderWidth(0, 0, 1, 0).
-				BorderColor(t.Border).
-				AlignItems(ui.Center).
-				Justify(ui.SpaceBetween).
-				Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "会话").FontSize(13).Bold()
-						components.Chip(c, fmt.Sprint(len(p.sessions)), components.ToneNeutral)
-					})
+	root := ui.Box(c).Width(panelWidth * progress).FillHeight().Background(t.Surface).Radius(t.Radius).Shrink(0).Clip().Children(func() {
+		ui.Column(c).
+			Width(panelWidth).
+			FillHeight().
+			Children(func() {
+				ui.Row(c).
+					FillWidth().
+					PaddingX(t.Space(3)).
+					Height(58).
+					BorderWidth(0, 0, 1, 0).
+					BorderColor(t.Border).
+					AlignItems(ui.Center).
+					Justify(ui.SpaceBetween).
+					Children(func() {
+						ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "会话").FontSize(13).Bold()
+							components.Chip(c, fmt.Sprint(len(p.sessions)), components.ToneNeutral)
+						})
 
-					ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-						if components.Button(c, components.ButtonProps{
-							Label:   "新建",
-							Variant: components.ButtonGhost,
-							Width:   56,
-						}).Clicked() {
+						if ui.Text(c, "新建").TextColor(t.Accent).Clicked() {
 							p.createSession()
 						}
-						if iconButton(c, components.IconPanel).Tooltip("收起会话列表").Clicked() {
-							p.panelCollapsed = true
+					})
+
+				ui.Scroll(c).Grow(1).TrackScroll(&p.panelScroll).Children(func() {
+					ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(2)).Children(func() {
+						for _, group := range p.sessionGroups() {
+							p.sessionGroup(c, group)
 						}
 					})
 				})
-
-			ui.Scroll(c).Grow(1).TrackScroll(&p.panelScroll).Children(func() {
-				ui.Column(c).FillWidth().Padding(8).Gap(8).Children(func() {
-					for _, group := range p.sessionGroups() {
-						p.sessionGroup(c, group)
-					}
-				})
 			})
-		})
+	})
+
+	theme.NormalShadow.Apply(c, root)
 }
 
 type sessionGroup struct {
@@ -537,216 +403,145 @@ func (p *Page) sessionGroup(c *ui.Context, group sessionGroup) {
 		p.groupOpen[group.key] = open
 	}
 
-	parts := ui.CollapsibleBase(c, open)
-
-	trigger := parts.Trigger.
-		FillWidth().
-		Height(24).
-		Padding(0, 4).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.SpaceBetween).
-		TextColor(t.TextMuted)
-	if trigger.Hovered() {
-		trigger.Background(t.SurfaceHover)
-	}
-	trigger.Children(func() {
-		ui.Text(c, group.title).FontSize(11).Bold().TextColor(t.TextMuted)
-		components.Icon(c, components.IconChevron, 11).Rotate(90 * parts.Progress())
-	})
-
-	panel := parts.Panel(func() {
-		ui.Column(c).FillWidth().Gap(2).Children(func() {
+	components.CollapsibleSection(c, components.CollapsibleSectionProps{
+		Title: group.title,
+		Open:  open,
+	}, func() {
+		ui.Column(c).FillWidth().Gap(t.Space(2)).Children(func() {
 			for _, session := range group.sessions {
 				p.sessionRow(c, session)
 			}
 		})
 	})
-	if panel.Valid() {
-		panel.Padding(0, 0, 4, 0)
-	}
 }
 
 func (p *Page) sessionRow(c *ui.Context, s contract.ChatSession) {
-	t := c.Theme()
-	active := s.ID == p.activeID
-
-	row := ui.Column(c).
-		FillWidth().
-		Padding(7, 8).
-		Radius(8).
-		Gap(1).
-		BorderWidth(0, 0, 0, 3).
-		BorderColor(ui.Transparent)
-	switch {
-	case active:
-		row.Background(t.Accent.Alpha(0.1)).BorderColor(t.Accent)
-	case row.Hovered():
-		row.Background(t.SurfaceHover)
+	menuOpen := p.menuOpen[s.ID]
+	if menuOpen == nil {
+		menuOpen = boolValue(false)
+		p.menuOpen[s.ID] = menuOpen
 	}
 
-	handled := false
-	row.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Text(c, s.Title).FontSize(13).Bold().MaxLines(1).Grow(1)
-			ui.Text(c, format.Relative(s.UpdatedAt)).FontSize(11).TextColor(t.TextMuted)
-
-			more := ui.ButtonBase(c).
-				Width(20).
-				Height(20).
-				Radius(4).
-				AlignItems(ui.Center).
-				Justify(ui.Center).
-				TextColor(t.TextMuted)
-			if more.Hovered() {
-				more.Background(t.SurfacePressed).TextColor(t.Text)
-			}
-			more.Children(func() {
-				components.Icon(c, components.IconMore, 13)
-			})
-			more.PopoverMenuButton(func(m *ui.Menu) {
-				if m.Item("重命名").Chosen() {
-					p.openRename(s)
-					handled = true
-				}
-				pinLabel := "置顶"
-				if s.Pinned {
-					pinLabel = "取消置顶"
-				}
-				if m.Item(pinLabel).Chosen() {
-					p.togglePin(s)
-					handled = true
-				}
-				m.Separator()
-				if m.Item("删除").Danger().Disabled(len(p.sessions) <= 1).Chosen() {
-					p.openDelete(s)
-					handled = true
-				}
-			})
-			more.Tooltip("更多操作")
-			if more.Clicked() {
-				handled = true
-			}
-		})
-
-		summary := strings.TrimSpace(s.Summary)
-		if summary == "" {
-			summary = "还没有消息"
-		}
-		ui.Text(c, summary).FontSize(11).TextColor(t.TextMuted).MaxLines(1)
+	components.SessionItem(c, components.SessionItemProps{
+		Title:          s.Title,
+		Summary:        s.Summary,
+		UpdatedAt:      s.UpdatedAt,
+		Active:         s.ID == p.activeID,
+		Pinned:         s.Pinned,
+		MenuOpen:       menuOpen,
+		DeleteDisabled: len(p.sessions) <= 1,
+		OnSelect:       func() { p.selectSession(s.ID) },
+		OnRename:       func() { p.openRename(s) },
+		OnTogglePin:    func() { p.togglePin(s) },
+		OnDelete:       func() { p.openDelete(s) },
 	})
-
-	if row.Clicked() && !handled {
-		p.selectSession(s.ID)
-	}
 }
 
 func (p *Page) renameModal(c *ui.Context) {
-	if !p.renameOpen {
-		return
-	}
 	t := c.Theme()
 
 	canSave := strings.TrimSpace(p.renameValue) != ""
 
-	ui.Modal(c, &p.renameOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "重命名会话").FontSize(18).Bold()
-			input := ui.TextInput(c, &p.renameValue).Placeholder("会话名称").MaxLength(30)
-			if input.Changed() {
-				p.renameErr = ""
+	components.Modal(c, components.ModalProps{
+		Open:  &p.renameOpen,
+		Title: "重命名会话",
+		Width: 420,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.renameOpen = false
 			}
-			if p.renameErr != "" {
-				ui.Text(c, p.renameErr).FontSize(12).TextColor(t.Danger)
-			}
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.renameOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "保存",
-					Variant:  components.ButtonPrimary,
-					Disabled: !canSave,
-				}).Clicked() {
-					p.saveRename()
-				}
-			})
-
-			if input.Submitted() && canSave {
+			if components.Button(c, components.ButtonProps{
+				Label:    "保存",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSave,
+			}).Clicked() {
 				p.saveRename()
 			}
-		})
+		},
+	}, func() {
+		input := ui.TextInput(c, &p.renameValue).Placeholder("会话名称").MaxLength(30)
+		if input.Changed() {
+			p.renameErr = ""
+		}
+		if p.renameErr != "" {
+			ui.Text(c, p.renameErr).FontSize(12).TextColor(t.Danger)
+		}
+		if input.Submitted() && canSave {
+			p.saveRename()
+		}
 	})
 }
 
 func (p *Page) deleteModal(c *ui.Context) {
-	if !p.deleteOpen {
-		return
-	}
 	session := p.sessionByID(p.deleteID)
-	if session == nil {
-		return
-	}
 	t := c.Theme()
 
-	ui.Modal(c, &p.deleteOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "删除会话").FontSize(18).Bold()
-			ui.Text(c, fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title)).
-				FontSize(13).
-				TextColor(t.TextMuted)
+	var title string
+	if session != nil {
+		title = session.Title
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.deleteOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "删除",
-					Variant:  components.ButtonDanger,
-					Disabled: len(p.sessions) <= 1,
-				}).Clicked() {
-					p.deleteSession()
-				}
-			})
-		})
+	props := components.ModalProps{
+		Open:  &p.deleteOpen,
+		Title: "删除会话",
+		Width: 420,
+	}
+	if session != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.deleteOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:    "删除",
+				Variant:  components.ButtonDanger,
+				Disabled: len(p.sessions) <= 1,
+			}).Clicked() {
+				p.deleteSession()
+			}
+		}
+	}
+
+	components.Modal(c, props, func() {
+		if session == nil {
+			return
+		}
+		ui.Text(c, fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", title)).
+			FontSize(13).
+			TextColor(t.TextMuted)
 	})
 }
 
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	if !p.deleteMessageOpen {
-		return
-	}
 	t := c.Theme()
 
-	ui.Modal(c, &p.deleteMessageOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "删除消息").FontSize(18).Bold()
-			ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
-				FontSize(13).
-				TextColor(t.TextMuted)
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.deleteMessageOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "删除",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.deleteMessage()
-				}
-			})
-		})
+	components.Modal(c, components.ModalProps{
+		Open:  &p.deleteMessageOpen,
+		Title: "删除消息",
+		Width: 420,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.deleteMessageOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:   "删除",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.deleteMessage()
+			}
+		},
+	}, func() {
+		ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
+			FontSize(13).
+			TextColor(t.TextMuted)
 	})
 }
 
@@ -1006,31 +801,35 @@ func (p *Page) stickToBottom() {
 	p.chatScroll.Y = math.MaxFloat32
 }
 
-// followEnd 让列表贴底；内容变高不算用户上滚，只有滚动位置明显后退才停止跟随。
+// followEnd 让列表贴住底部；用户上滚后停止跟随，回到底部再恢复。
+// 只在内容变高时改写 Y：每帧都写 MaxFloat32 会被滚动容器判定为应用接管，
+// 持续取消滚轮的滑动，表现为贴底后要滚好几下才能离开底部。
 func (p *Page) followEnd() {
 	if p.chatScroll.MaxY <= 0 {
 		p.lastMaxY = 0
-		if p.follow {
-			p.chatScroll.Y = math.MaxFloat32
-		}
 		return
 	}
 
 	if !p.follow {
 		if p.chatScroll.Y >= p.chatScroll.MaxY-16 {
 			p.follow = true
+			p.chatScroll.Y = math.MaxFloat32
 			p.lastMaxY = p.chatScroll.MaxY
 		}
 		return
 	}
 
-	if p.lastMaxY > 0 && p.chatScroll.Y < p.lastMaxY-24 {
+	// 内容没有变高却离开了上一帧的底部，说明用户主动上滚；
+	// 内容收缩导致 MaxY 变小时不算。
+	if p.chatScroll.MaxY >= p.lastMaxY && p.chatScroll.Y < p.lastMaxY-1 {
 		p.follow = false
 		p.lastMaxY = p.chatScroll.MaxY
 		return
 	}
 
-	p.chatScroll.Y = math.MaxFloat32
+	if p.chatScroll.MaxY > p.lastMaxY {
+		p.chatScroll.Y = math.MaxFloat32
+	}
 	p.lastMaxY = p.chatScroll.MaxY
 }
 
@@ -1088,90 +887,4 @@ func (p *Page) modelID() string {
 
 func boolValue(v bool) *bool {
 	return &v
-}
-
-func emotionLabel(value string) string {
-	switch value {
-	case "happy":
-		return "开心"
-	case "shy":
-		return "害羞"
-	case "angry":
-		return "生气"
-	case "sad":
-		return "难过"
-	case "surprised":
-		return "惊讶"
-	case "neutral":
-		return "平静"
-	default:
-		return value
-	}
-}
-
-// iconButton 是面板里的轻量图标按钮。
-func iconButton(c *ui.Context, name components.IconName) ui.Element {
-	t := c.Theme()
-
-	b := ui.ButtonBase(c).
-		Width(22).
-		Height(22).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.Center).
-		TextColor(t.TextMuted)
-	if b.Hovered() {
-		b.Background(t.SurfacePressed).TextColor(t.Text)
-	}
-	b.Children(func() {
-		components.Icon(c, name, 13)
-	})
-	return b
-}
-
-// textButton 是消息操作栏里的轻量文字按钮。
-func textButton(c *ui.Context, label string, danger bool) ui.Element {
-	t := c.Theme()
-
-	fg := t.TextMuted
-	bg := ui.Transparent
-	b := ui.ButtonBase(c).
-		Height(20).
-		PaddingX(6).
-		Radius(4).
-		AlignItems(ui.Center).
-		Justify(ui.Center)
-	if b.Hovered() {
-		if danger {
-			fg = t.Danger
-			bg = t.Danger.Alpha(0.1)
-		} else {
-			fg = t.Accent
-			bg = t.Accent.Alpha(0.1)
-		}
-	}
-	b.Background(bg).TextColor(fg)
-	b.Children(func() {
-		ui.Text(c, label).FontSize(11).TextColor(fg)
-	})
-	return b
-}
-
-// circleButton 是输入区右侧的圆形图标按钮。
-func circleButton(c *ui.Context, name components.IconName, bg, fg ui.Color, enabled bool) ui.Element {
-	b := ui.ButtonBase(c).
-		Width(32).
-		Height(32).
-		Radius(16).
-		AlignItems(ui.Center).
-		Justify(ui.Center).
-		Background(bg).
-		TextColor(fg)
-	if !enabled {
-		b.Opacity(0.45).Disabled(true)
-	}
-	b.Children(func() {
-		components.Icon(c, name, 15)
-	})
-	return b
 }

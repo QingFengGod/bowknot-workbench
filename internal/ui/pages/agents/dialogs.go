@@ -11,66 +11,55 @@ import (
 )
 
 func (p *Page) renameModal(c *ui.Context) {
-	if !p.renameOpen {
-		return
-	}
 	t := c.Theme()
 
 	canSave := strings.TrimSpace(p.renameValue) != ""
-
-	ui.Modal(c, &p.renameOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "重命名会话").FontSize(18).Bold()
-			input := ui.TextInput(c, &p.renameValue).Placeholder("会话名称").MaxLength(30)
-			if input.Changed() {
-				p.renameErr = ""
+	save := func() {
+		if p.svc != nil {
+			if err := p.svc.RenameSession(p.renameID, p.renameValue); err != nil {
+				p.renameErr = err.Error()
+				return
 			}
-			if p.renameErr != "" {
-				ui.Text(c, p.renameErr).FontSize(12).TextColor(t.Danger)
-			}
+			p.reloadSessions()
+		}
+		p.renameOpen = false
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.renameOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "保存",
-					Variant:  components.ButtonPrimary,
-					Disabled: !canSave,
-				}).Clicked() {
-					if p.svc != nil {
-						if err := p.svc.RenameSession(p.renameID, p.renameValue); err != nil {
-							p.renameErr = err.Error()
-							return
-						}
-						p.reloadSessions()
-					}
-					p.renameOpen = false
-				}
-			})
-
-			if input.Submitted() && canSave {
-				if p.svc != nil {
-					if err := p.svc.RenameSession(p.renameID, p.renameValue); err != nil {
-						p.renameErr = err.Error()
-						return
-					}
-					p.reloadSessions()
-				}
+	components.Modal(c, components.ModalProps{
+		Open:  &p.renameOpen,
+		Title: "重命名会话",
+		Width: 420,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
 				p.renameOpen = false
 			}
-		})
+			if components.Button(c, components.ButtonProps{
+				Label:    "保存",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSave,
+			}).Clicked() {
+				save()
+			}
+		},
+	}, func() {
+		input := ui.TextInput(c, &p.renameValue).Placeholder("会话名称").MaxLength(30)
+		if input.Changed() {
+			p.renameErr = ""
+		}
+		if p.renameErr != "" {
+			ui.Text(c, p.renameErr).FontSize(12).TextColor(t.Danger)
+		}
+		if input.Submitted() && canSave {
+			save()
+		}
 	})
 }
 
 // agentDialog 是新建 / 编辑 Agent 的表单。
 func (p *Page) agentDialog(c *ui.Context) {
-	if !p.agentDialogOpen {
-		return
-	}
 	t := c.Theme()
 
 	title := "新建 Agent"
@@ -79,50 +68,49 @@ func (p *Page) agentDialog(c *ui.Context) {
 	}
 	canSave := strings.TrimSpace(p.agentName) != ""
 
-	ui.Modal(c, &p.agentDialogOpen, func() {
-		ui.Column(c).Width(480).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(18).Bold()
-
-			ui.Text(c, "名称").FontSize(12).Bold().TextColor(t.TextMuted)
-			nameInput := ui.TextInput(c, &p.agentName).Placeholder("例如：写作助手").MaxLength(20)
-			if nameInput.Changed() {
-				p.agentErr = ""
+	components.Modal(c, components.ModalProps{
+		Open:  &p.agentDialogOpen,
+		Title: title,
+		Width: 480,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.agentDialogOpen = false
 			}
-
-			ui.Text(c, "描述").FontSize(12).Bold().TextColor(t.TextMuted)
-			ui.TextInput(c, &p.agentDesc).Placeholder("一句话说明它负责什么").MaxLength(40)
-
-			ui.Text(c, "人设").FontSize(12).Bold().TextColor(t.TextMuted)
-			ui.TextAreaBase(c, &p.agentPersona).
-				Placeholder("描述它的身份、语气与行为边界").
-				Lines(4, 8).
-				FillWidth().
-				MaxLength(300)
-
-			if p.agentErr != "" {
-				ui.Text(c, p.agentErr).FontSize(12).TextColor(t.Danger)
-			}
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.agentDialogOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "保存",
-					Variant:  components.ButtonPrimary,
-					Disabled: !canSave,
-				}).Clicked() {
-					p.submitAgent()
-				}
-			})
-
-			if nameInput.Submitted() && canSave {
+			if components.Button(c, components.ButtonProps{
+				Label:    "保存",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSave,
+			}).Clicked() {
 				p.submitAgent()
 			}
-		})
+		},
+	}, func() {
+		ui.Text(c, "名称").FontSize(12).Bold().TextColor(t.TextMuted)
+		nameInput := ui.TextInput(c, &p.agentName).Placeholder("例如：写作助手").MaxLength(20)
+		if nameInput.Changed() {
+			p.agentErr = ""
+		}
+
+		ui.Text(c, "描述").FontSize(12).Bold().TextColor(t.TextMuted)
+		ui.TextInput(c, &p.agentDesc).Placeholder("一句话说明它负责什么").MaxLength(40)
+
+		ui.Text(c, "人设").FontSize(12).Bold().TextColor(t.TextMuted)
+		ui.TextAreaBase(c, &p.agentPersona).
+			Placeholder("描述它的身份、语气与行为边界").
+			Lines(4, 8).
+			FillWidth().
+			MaxLength(300)
+
+		if p.agentErr != "" {
+			ui.Text(c, p.agentErr).FontSize(12).TextColor(t.Danger)
+		}
+
+		if nameInput.Submitted() && canSave {
+			p.submitAgent()
+		}
 	})
 }
 
@@ -161,9 +149,6 @@ func (p *Page) submitAgent() {
 
 // groupDialog 是新建 / 编辑群聊的表单。
 func (p *Page) groupDialog(c *ui.Context) {
-	if !p.groupDialogOpen {
-		return
-	}
 	t := c.Theme()
 
 	title := "新建群聊"
@@ -172,57 +157,56 @@ func (p *Page) groupDialog(c *ui.Context) {
 	}
 	canSave := strings.TrimSpace(p.groupName) != "" && p.checkedMembers() != nil
 
-	ui.Modal(c, &p.groupDialogOpen, func() {
-		ui.Column(c).Width(480).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(18).Bold()
-
-			ui.Text(c, "群聊名称").FontSize(12).Bold().TextColor(t.TextMuted)
-			nameInput := ui.TextInput(c, &p.groupName).Placeholder("例如：周报小组").MaxLength(20)
-			if nameInput.Changed() {
-				p.groupErr = ""
+	components.Modal(c, components.ModalProps{
+		Open:  &p.groupDialogOpen,
+		Title: title,
+		Width: 480,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.groupDialogOpen = false
 			}
-
-			ui.Row(c).FillWidth().Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "选择成员").FontSize(12).Bold().TextColor(t.TextMuted)
-				ui.Text(c, "主 Agent 默认在群内").FontSize(12).TextColor(t.TextMuted)
-			})
-
-			ui.Scroll(c).FillWidth().Height(240).Children(func() {
-				ui.Column(c).FillWidth().Padding(4).Gap(2).Children(func() {
-					if len(p.agents) == 0 {
-						ui.Text(c, "还没有可选的 Agent。").FontSize(12).TextColor(t.TextMuted).Padding(12)
-						return
-					}
-					for _, agent := range p.agents {
-						p.memberRow(c, agent)
-					}
-				})
-			})
-
-			if p.groupErr != "" {
-				ui.Text(c, p.groupErr).FontSize(12).TextColor(t.Danger)
-			}
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.groupDialogOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "保存",
-					Variant:  components.ButtonPrimary,
-					Disabled: !canSave,
-				}).Clicked() {
-					p.submitGroup()
-				}
-			})
-
-			if nameInput.Submitted() && canSave {
+			if components.Button(c, components.ButtonProps{
+				Label:    "保存",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSave,
+			}).Clicked() {
 				p.submitGroup()
 			}
+		},
+	}, func() {
+		ui.Text(c, "群聊名称").FontSize(12).Bold().TextColor(t.TextMuted)
+		nameInput := ui.TextInput(c, &p.groupName).Placeholder("例如：周报小组").MaxLength(20)
+		if nameInput.Changed() {
+			p.groupErr = ""
+		}
+
+		ui.Row(c).FillWidth().Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "选择成员").FontSize(12).Bold().TextColor(t.TextMuted)
+			ui.Text(c, "主 Agent 默认在群内").FontSize(12).TextColor(t.TextMuted)
 		})
+
+		ui.Scroll(c).FillWidth().Height(240).Children(func() {
+			ui.Column(c).FillWidth().Padding(4).Gap(2).Children(func() {
+				if len(p.agents) == 0 {
+					ui.Text(c, "还没有可选的 Agent。").FontSize(12).TextColor(t.TextMuted).Padding(12)
+					return
+				}
+				for _, agent := range p.agents {
+					p.memberRow(c, agent)
+				}
+			})
+		})
+
+		if p.groupErr != "" {
+			ui.Text(c, p.groupErr).FontSize(12).TextColor(t.Danger)
+		}
+
+		if nameInput.Submitted() && canSave {
+			p.submitGroup()
+		}
 	})
 }
 
@@ -312,45 +296,50 @@ func (p *Page) submitGroup() {
 
 // deleteModal 确认删除 Agent 或解散群聊。
 func (p *Page) deleteModal(c *ui.Context) {
-	if !p.deleteOpen {
-		return
-	}
 	t := c.Theme()
 
 	item := p.panelItemByKey(p.deleteKey)
 	if item == nil {
 		p.deleteOpen = false
-		return
 	}
 
-	title, content, okLabel := "删除 Agent",
-		fmt.Sprintf("确定删除「%s」吗？该 Agent 的会话记录将一并移除。", item.name), "删除"
-	if item.kind == contract.ItemKindGroup {
-		title, content, okLabel = "解散群聊",
-			fmt.Sprintf("确定解散「%s」吗？解散后群聊消息将无法恢复。", item.name), "解散"
+	title, content, okLabel := "删除 Agent", "", "删除"
+	if item != nil {
+		content = fmt.Sprintf("确定删除「%s」吗？该 Agent 的会话记录将一并移除。", item.name)
+		if item.kind == contract.ItemKindGroup {
+			title, content, okLabel = "解散群聊",
+				fmt.Sprintf("确定解散「%s」吗？解散后群聊消息将无法恢复。", item.name), "解散"
+		}
 	}
 
-	ui.Modal(c, &p.deleteOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, title).FontSize(18).Bold()
-			ui.Text(c, content).FontSize(13).TextColor(t.TextMuted)
+	props := components.ModalProps{
+		Open:  &p.deleteOpen,
+		Title: title,
+		Width: 420,
+	}
+	if item != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.deleteOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:   okLabel,
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.removeItem(*item)
+				p.deleteOpen = false
+			}
+		}
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.deleteOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   okLabel,
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.removeItem(*item)
-					p.deleteOpen = false
-				}
-			})
-		})
+	components.Modal(c, props, func() {
+		if item == nil {
+			return
+		}
+		ui.Text(c, content).FontSize(13).TextColor(t.TextMuted)
 	})
 }
 
@@ -381,44 +370,41 @@ func (p *Page) removeItem(item panelItem) {
 
 // deleteMessageModal 确认删除单条消息。
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	if !p.deleteMessageOpen {
-		return
-	}
 	t := c.Theme()
 
-	ui.Modal(c, &p.deleteMessageOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "删除消息").FontSize(18).Bold()
-			ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
-				FontSize(13).
-				TextColor(t.TextMuted)
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.deleteMessageOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "删除",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					conv := p.conversationID()
-					if p.svc != nil && conv != "" {
-						if p.streams[conv] == p.deleteMessageID {
-							p.stop(conv)
-						}
-						if err := p.svc.DeleteMessage(conv, p.deleteMessageID); err != nil {
-							p.sendErr = err.Error()
-						}
+	components.Modal(c, components.ModalProps{
+		Open:  &p.deleteMessageOpen,
+		Title: "删除消息",
+		Width: 420,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.deleteMessageOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:   "删除",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				conv := p.conversationID()
+				if p.svc != nil && conv != "" {
+					if p.streams[conv] == p.deleteMessageID {
+						p.stop(conv)
 					}
-					p.deleteMessageOpen = false
-					p.deleteMessageID = ""
-					p.reloadMessages()
+					if err := p.svc.DeleteMessage(conv, p.deleteMessageID); err != nil {
+						p.sendErr = err.Error()
+					}
 				}
-			})
-		})
+				p.deleteMessageOpen = false
+				p.deleteMessageID = ""
+				p.reloadMessages()
+			}
+		},
+	}, func() {
+		ui.Text(c, "删除后无法恢复，确定删除这条消息吗？").
+			FontSize(13).
+			TextColor(t.TextMuted)
 	})
 }
 

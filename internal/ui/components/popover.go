@@ -14,49 +14,68 @@ func Popover(c *ui.Context, anchor ui.Element, open *bool, content func()) ui.El
 
 	var panel ui.Element
 	ui.PopoverBase(c, anchor, open, func(p ui.Element) {
-		panel = p.
+		panel = theme.PanelShadow.Apply(c, p.
 			MinWidth(140).
 			Background(t.Surface).
-			Radius(theme.RadiusSM).
+			Radius(theme.Radius).
 			BorderWidth(1).
 			BorderColor(t.Border).
-			Shadow(0, 0, 12, 0, theme.ShadowColor.Alpha(0.2)).
 			Padding(t.Space(1.5)).
-			GapY(t.Spacing)
+			GapY(t.Spacing))
 
 		content()
 	})
 	return panel
 }
 
-// PopoverItem 是弹出面板中的可点击行：选中项以品牌色底与文字标记。
-// 尺寸使用固定值，不依赖 Theme.Spacing；点击后由调用方决定后续动作
-// （通常更新状态并关闭面板）。
-func PopoverItem(c *ui.Context, label string, selected bool, onClick func()) {
+// PopoverItemProps 描述弹出面板中的可点击行。
+type PopoverItemProps struct {
+	// Label 供无障碍与自动化识别使用，不参与绘制。
+	Label    string
+	Selected bool
+	// Danger 让悬浮底色转为危险色，通常与 Content 里的红色文字搭配。
+	Danger bool
+	// Disabled 置灰整行并忽略点击。
+	Disabled bool
+	OnClick  func()
+	// Content 渲染行内内容；selected 与行的选中态一致，调用方可据此调整文字颜色。
+	Content func(c *ui.Context, selected bool)
+}
+
+// PopoverItem 只负责悬浮、选中、危险与禁用等行级样式以及整行点击，
+// 行内内容全部由 Content 插槽提供。尺寸使用固定值，不依赖 Theme.Spacing；
+// 点击后由调用方决定后续动作（通常更新状态并关闭面板）。
+func PopoverItem(c *ui.Context, p PopoverItemProps) {
 	t := c.Theme()
 
-	btn := ui.Box(c).
+	row := ui.Box(c).
 		FillWidth().
 		PaddingY(t.Space(2)).
 		PaddingX(t.Space(3)).
-		Radius(theme.RadiusXS).
-		Label(label)
+		Radius(theme.RadiusSM).
+		Label(p.Label)
 
-	if selected {
-		btn.Background(t.Accent.Alpha(0.12))
-	} else if btn.Hovered() {
-		btn.Background(t.SurfaceHover)
+	switch {
+	case p.Selected:
+		row.Background(t.Accent.Alpha(0.12))
+	case p.Disabled:
+	case p.Danger && row.Hovered():
+		row.Background(t.Danger.Alpha(0.1))
+	case row.Hovered():
+		row.Background(t.SurfaceHover)
 	}
 
-	btn.Children(func() {
-		color := t.Text
-		if selected {
-			color = t.Accent
+	row.Children(func() {
+		if p.Content != nil {
+			p.Content(c, p.Selected)
 		}
-		ui.Text(c, label).FontSize(14).TextColor(color).MaxLines(1)
 	})
 
-	if btn.Clicked() {
-		onClick()
+	if p.Disabled {
+		row.Opacity(0.5).IgnoreInput(true)
+		return
+	}
+	if row.Clicked() && p.OnClick != nil {
+		p.OnClick()
 	}
 }

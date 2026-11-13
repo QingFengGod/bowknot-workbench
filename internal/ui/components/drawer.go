@@ -56,7 +56,7 @@ func Drawer(c *ui.Context, p DrawerProps, body func()) {
 			Absolute().
 			Top(0).Right(0).Bottom(0).
 			Width(width).
-			Background(t.Background).
+			Background(t.Surface).
 			BorderWidth(1, 0, 0, 0).
 			BorderColor(t.Border).
 			Shadow(-12, 0, 32, 0, ui.RGBA(0, 0, 0, 0.18)).
@@ -70,8 +70,7 @@ func Drawer(c *ui.Context, p DrawerProps, body func()) {
 		panel.Children(func() {
 			ui.Row(c).
 				FillWidth().
-				Height(56).
-				Padding(0, 20).
+				Padding(t.Space(3)).
 				BorderWidth(0, 0, 1, 0).
 				BorderColor(t.Border).
 				AlignItems(ui.Center).
@@ -99,16 +98,18 @@ func Drawer(c *ui.Context, p DrawerProps, body func()) {
 				})
 
 			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).FillWidth().Padding(20).Gap(14).Children(body)
+				ui.Column(c).FillWidth().Padding(t.Space(3)).Gap(t.Space(3)).Children(body)
 			})
 
 			if p.Footer != nil {
 				ui.Row(c).
 					FillWidth().
-					Padding(14, 20).
+					Padding(t.Space(3)).
+					Gap(t.Space(3)).
 					BorderWidth(1, 0, 0, 0).
 					BorderColor(t.Border).
 					AlignItems(ui.Center).
+					Justify(ui.End).
 					Children(p.Footer)
 			}
 		})

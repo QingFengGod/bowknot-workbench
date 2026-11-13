@@ -10,6 +10,7 @@ import (
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/ui/components"
 	"bowknot-workbench/internal/ui/format"
+	"bowknot-workbench/internal/ui/theme"
 )
 
 var sortOptions = []string{"最近使用", "名称", "安装时间"}
@@ -34,11 +35,6 @@ type Page struct {
 
 	detailOpen bool
 	detailID   string
-
-	renameOpen  bool
-	renameID    string
-	renameValue string
-	renameErr   string
 
 	uninstallOpen bool
 	uninstallID   string
@@ -69,8 +65,18 @@ func New(svc contract.AppCatalog, hooks Hooks) *Page {
 func (p *Page) View(c *ui.Context) {
 	t := c.Theme()
 	appCount := len(p.apps)
-	components.Page(c, func() {
-		ui.Row(c).FillWidth().Background(t.Surface).Radius(t.Radius).Padding(t.Space(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(t.Space(3)).Children(func() {
+	ui.Column(c).Fill().Background(t.Background).Gap(t.Space(3)).Children(func() {
+		header := ui.Row(c).
+			FillWidth().
+			Background(t.Surface).
+			Radius(t.Radius).
+			Padding(t.Space(3)).
+			AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).
+			Gap(t.Space(3))
+		theme.NormalShadow.Apply(c, header)
+
+		header.Children(func() {
 			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Apps").FontSize(22).Bold()
 				if appCount >= 0 {
@@ -121,20 +127,21 @@ func (p *Page) View(c *ui.Context) {
 		default:
 			p.gridView(c, list)
 		}
+
+		p.detailDrawer(c)
+		p.uninstallModal(c)
+		p.clearModal(c)
+		p.installModal(c)
 	})
 
-	p.detailDrawer(c)
-	p.renameModal(c)
-	p.uninstallModal(c)
-	p.clearModal(c)
-	p.installModal(c)
 }
 
 func (p *Page) gridView(c *ui.Context, list []contract.AppItem) {
+
 	p.grid.Key = func(i int) any { return list[i].ID }
 	ui.GridView(c, &p.grid, len(list), 260, 100, func(i int) {
 		p.appCard(c, list[i])
-	}).Grow(1)
+	}).Grow(1).Margin(-4, 0, 0, 0)
 }
 
 func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
@@ -146,20 +153,40 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 		Gap(t.Space(3)).
 		Radius(t.Radius).
 		Background(t.Surface).
-		BorderWidth(1).
+		Cursor(ui.Cursor(ui.CursorPointer)).
 		AlignItems(ui.Center)
 
-	if card.Hovered() {
-		card.BorderColor(t.Accent)
-	} else {
-		card.BorderColor(t.Border)
-	}
+	theme.CardShadow.Apply(c, card)
 
+	handled := false
 	card.Children(func() {
 		components.Avatar(c, app.IconText, 56)
 
 		ui.Column(c).Grow(1).Gap(3).Children(func() {
-			ui.Text(c, app.DisplayName).FontSize(14).Bold().MaxLines(1)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(8).Children(func() {
+				ui.Text(c, app.DisplayName).FontSize(14).Bold().MaxLines(1)
+
+				detail := ui.ButtonBase(c).
+					Height(20).
+					PaddingX(6).
+					Radius(theme.RadiusXS).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					TextColor(t.Accent).
+					Cursor(ui.CursorPointer)
+
+				if detail.Hovered() {
+					detail.Background(t.Accent.Alpha(0.12))
+				}
+				detail.Children(func() {
+					ui.Text(c, "详情").FontSize(12).TextColor(t.Accent)
+				})
+				if detail.Clicked() {
+					p.openDetail(app.ID)
+					handled = true
+				}
+			})
+
 			ui.Text(c, orDefault(app.Description, "暂无描述")).
 				FontSize(12).
 				TextColor(t.TextMuted).
@@ -174,53 +201,63 @@ func (p *Page) appCard(c *ui.Context, app contract.AppItem) {
 		})
 	})
 
-	if card.Clicked() {
+	if card.Clicked() && !handled {
 		p.launch(app.ID)
 	}
 }
 
-func (p *Page) detailDrawer(c *ui.Context) {
-	app := p.appByID(p.detailID)
-	if app == nil {
+// openDetail 打开应用详情抽屉；detailID 为空时 detailDrawer 会跳过绘制。
+func (p *Page) openDetail(id string) {
+	if p.appByID(id) == nil {
 		return
 	}
-	t := c.Theme()
-	a := *app
+	p.detailID = id
+	p.detailOpen = true
+}
 
-	components.Drawer(c, components.DrawerProps{
+func (p *Page) detailDrawer(c *ui.Context) {
+	app := p.appByID(p.detailID)
+	t := c.Theme()
+
+	var a contract.AppItem
+	if app != nil {
+		a = *app
+	}
+
+	// 即使本次没有选中应用也要构建抽屉：关闭状态下它是动画的锚点，
+	// 提前建立动画通道，首次打开才有从 0 到 1 的滑入过渡。
+	props := components.DrawerProps{
 		Open:  &p.detailOpen,
 		Title: "应用详情",
 		Width: 480,
-		Footer: func() {
-			ui.Row(c).FillWidth().Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "卸载",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.detailOpen = false
-					p.uninstallID = a.ID
-					p.keepData = true
-					p.uninstallOpen = true
-				}
+	}
+	if app != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "卸载",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.detailOpen = false
+				p.uninstallID = a.ID
+				p.keepData = true
+				p.uninstallOpen = true
+			}
 
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					if components.Button(c, components.ButtonProps{
-						Label:   "重命名",
-						Variant: components.ButtonSecondary,
-					}).Clicked() {
-						p.openRename(a)
-					}
-					if components.Button(c, components.ButtonProps{
-						Label:   "打开应用",
-						Variant: components.ButtonPrimary,
-					}).Clicked() {
-						p.detailOpen = false
-						p.launch(a.ID)
-					}
-				})
-			})
-		},
-	}, func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "打开应用",
+				Variant: components.ButtonPrimary,
+			}).Clicked() {
+				p.detailOpen = false
+				p.launch(a.ID)
+			}
+		}
+	}
+
+	components.Drawer(c, props, func() {
+		if app == nil {
+			return
+		}
+
 		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 			components.Avatar(c, a.IconText, 48)
 			ui.Column(c).Gap(2).Children(func() {
@@ -303,123 +340,98 @@ func (p *Page) toolRow(c *ui.Context, appID string, tool contract.AppTool) {
 		})
 }
 
-func (p *Page) renameModal(c *ui.Context) {
-	if !p.renameOpen {
-		return
-	}
-	t := c.Theme()
-
-	canSave := strings.TrimSpace(p.renameValue) != "" && strings.TrimSpace(p.renameValue) != p.currentName(p.renameID)
-
-	ui.Modal(c, &p.renameOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "重命名应用").FontSize(18).Bold()
-			input := ui.TextInput(c, &p.renameValue).Placeholder("应用显示名称").MaxLength(20)
-			if input.Changed() {
-				p.renameErr = ""
-			}
-			ui.Text(c, "只修改本地显示名，不会影响应用包本身。").FontSize(12).TextColor(t.TextMuted)
-			if p.renameErr != "" {
-				ui.Text(c, p.renameErr).FontSize(12).TextColor(t.Danger)
-			}
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.renameOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "保存",
-					Variant:  components.ButtonPrimary,
-					Disabled: !canSave,
-				}).Clicked() {
-					p.saveRename()
-				}
-			})
-		})
-	})
-}
-
 func (p *Page) uninstallModal(c *ui.Context) {
 	app := p.appByID(p.uninstallID)
-	if app == nil {
-		return
-	}
 	t := c.Theme()
-	name := app.DisplayName
 
-	ui.Modal(c, &p.uninstallOpen, func() {
-		ui.Column(c).Width(440).Gap(10).Children(func() {
-			ui.Text(c, "卸载应用").FontSize(18).Bold()
-			ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后，该应用的能力会立即从助理中移除。", name)).
-				FontSize(13).
-				TextColor(t.TextMuted)
+	var name string
+	if app != nil {
+		name = app.DisplayName
+	}
 
-			keep := p.keepData
-			if ui.Checkbox(c, &keep, "保留应用数据").Changed() {
-				p.keepData = keep
+	// 关闭状态下也要构建，动画锚点才能停在 0，首次打开才有过渡。
+	props := components.ModalProps{
+		Open:  &p.uninstallOpen,
+		Title: "卸载应用",
+		Width: 440,
+	}
+	if app != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.uninstallOpen = false
 			}
-			if !p.keepData {
-				ui.Text(c, "应用数据将被删除且无法恢复。").FontSize(12).TextColor(t.Danger)
+			if components.Button(c, components.ButtonProps{
+				Label:   "卸载",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.uninstall()
 			}
+		}
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.uninstallOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "卸载",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.uninstall()
-				}
-			})
-		})
+	components.Modal(c, props, func() {
+		if app == nil {
+			return
+		}
+		ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后，该应用的能力会立即从助理中移除。", name)).
+			FontSize(13).
+			TextColor(t.TextMuted)
+
+		keep := p.keepData
+		if ui.Checkbox(c, &keep, "保留应用数据").Changed() {
+			p.keepData = keep
+		}
+		if !p.keepData {
+			ui.Text(c, "应用数据将被删除且无法恢复。").FontSize(12).TextColor(t.Danger)
+		}
 	})
 }
 
 func (p *Page) clearModal(c *ui.Context) {
 	app := p.appByID(p.clearID)
-	if app == nil {
-		return
-	}
 	t := c.Theme()
-	name := app.DisplayName
 
-	ui.Modal(c, &p.clearOpen, func() {
-		ui.Column(c).Width(420).Gap(10).Children(func() {
-			ui.Text(c, "清除应用数据").FontSize(18).Bold()
-			ui.Text(c, fmt.Sprintf("确定清除「%s」的应用数据吗？清除后无法恢复，应用本身会保留。", name)).
-				FontSize(13).
-				TextColor(t.TextMuted)
+	var name string
+	if app != nil {
+		name = app.DisplayName
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.clearOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "清除",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.clearData()
-				}
-			})
-		})
+	props := components.ModalProps{
+		Open:  &p.clearOpen,
+		Title: "清除应用数据",
+		Width: 420,
+	}
+	if app != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.clearOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:   "清除",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.clearData()
+			}
+		}
+	}
+
+	components.Modal(c, props, func() {
+		if app == nil {
+			return
+		}
+		ui.Text(c, fmt.Sprintf("确定清除「%s」的应用数据吗？清除后无法恢复，应用本身会保留。", name)).
+			FontSize(13).
+			TextColor(t.TextMuted)
 	})
 }
 
 func (p *Page) installModal(c *ui.Context) {
-	if !p.installOpen {
-		return
-	}
 	t := c.Theme()
 
 	placeholder := "例如：D:\\bowknot-apps\\pomodoro"
@@ -427,55 +439,54 @@ func (p *Page) installModal(c *ui.Context) {
 		placeholder = "例如：https://apps.example.com/pomodoro.zip"
 	}
 
-	ui.Modal(c, &p.installOpen, func() {
-		ui.Column(c).Width(560).Gap(10).Children(func() {
-			ui.Text(c, "安装应用").FontSize(18).Bold()
+	components.Modal(c, components.ModalProps{
+		Open:  &p.installOpen,
+		Title: "安装应用",
+		Width: 560,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.installOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:    "安装",
+				Variant:  components.ButtonPrimary,
+				Disabled: p.preview == nil,
+			}).Clicked() {
+				p.install()
+			}
+		},
+	}, func() {
+		tabs := ui.Tabs(c, &p.installType, "本地应用包", "远程地址")
+		if tabs.Changed() {
+			p.installValue = ""
+			p.installErr = ""
+			p.preview = nil
+		}
 
-			tabs := ui.Tabs(c, &p.installType, "本地应用包", "远程地址")
-			if tabs.Changed() {
-				p.installValue = ""
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			input := ui.TextInput(c, &p.installValue).Placeholder(placeholder)
+			if input.Changed() {
 				p.installErr = ""
 				p.preview = nil
 			}
-
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				input := ui.TextInput(c, &p.installValue).Placeholder(placeholder)
-				if input.Changed() {
-					p.installErr = ""
-					p.preview = nil
-				}
-				if components.Button(c, components.ButtonProps{Label: "解析"}).Clicked() {
-					p.parse()
-				}
-			})
-
-			ui.Text(c, "先解析应用包，确认能力清单后再安装。").FontSize(12).TextColor(t.TextMuted)
-			ui.Text(c, "演示环境可尝试：pomodoro、reading 或 invalid").FontSize(11).TextColor(t.TextMuted)
-
-			if p.installErr != "" {
-				ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
+			if components.Button(c, components.ButtonProps{Label: "解析"}).Clicked() {
+				p.parse()
 			}
-
-			if p.preview != nil {
-				p.previewCard(c, *p.preview)
-			}
-
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.installOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:    "安装",
-					Variant:  components.ButtonPrimary,
-					Disabled: p.preview == nil,
-				}).Clicked() {
-					p.install()
-				}
-			})
 		})
+
+		ui.Text(c, "先解析应用包，确认能力清单后再安装。").FontSize(12).TextColor(t.TextMuted)
+		ui.Text(c, "演示环境可尝试：pomodoro、reading 或 invalid").FontSize(11).TextColor(t.TextMuted)
+
+		if p.installErr != "" {
+			ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
+		}
+
+		if p.preview != nil {
+			p.previewCard(c, *p.preview)
+		}
 	})
 }
 
@@ -583,25 +594,6 @@ func (p *Page) installSource() contract.InstallSource {
 	return contract.InstallSource{Type: kind, Value: p.installValue}
 }
 
-func (p *Page) openRename(app contract.AppItem) {
-	p.renameID = app.ID
-	p.renameValue = app.DisplayName
-	p.renameErr = ""
-	p.renameOpen = true
-}
-
-func (p *Page) saveRename() {
-	if p.svc == nil {
-		return
-	}
-	if err := p.svc.Rename(p.renameID, p.renameValue); err != nil {
-		p.renameErr = err.Error()
-		return
-	}
-	p.renameOpen = false
-	p.reload()
-}
-
 func (p *Page) uninstall() {
 	if p.svc == nil {
 		return
@@ -686,13 +678,6 @@ func (p *Page) appByID(id string) *contract.AppItem {
 		}
 	}
 	return nil
-}
-
-func (p *Page) currentName(id string) string {
-	if app := p.appByID(id); app != nil {
-		return app.DisplayName
-	}
-	return ""
 }
 
 func lastUsedText(app contract.AppItem) string {

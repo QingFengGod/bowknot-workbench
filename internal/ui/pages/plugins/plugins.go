@@ -45,7 +45,7 @@ func New(svc contract.PluginService) *Page {
 func (p *Page) View(c *ui.Context) {
 	t := c.Theme()
 	pluginCount := len(p.plugins)
-	components.Page(c, func() {
+	ui.Column(c).Fill().Background(t.Background).Gap(t.Space(3)).Children(func() {
 		ui.Row(c).FillWidth().Background(t.Surface).Radius(t.Radius).Padding(t.Space(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(t.Space(3)).Children(func() {
 			ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "插件").FontSize(22).Bold()
@@ -255,9 +255,6 @@ func (p *Page) agentRow(c *ui.Context, pluginID string, agent contract.PluginAge
 }
 
 func (p *Page) installModal(c *ui.Context) {
-	if !p.installOpen {
-		return
-	}
 	t := c.Theme()
 
 	placeholder := "例如 D:\\bowknot-plugins\\my-plugin"
@@ -265,67 +262,76 @@ func (p *Page) installModal(c *ui.Context) {
 		placeholder = "例如 https://plugins.bowknot.dev/my-plugin"
 	}
 
-	ui.Modal(c, &p.installOpen, func() {
-		ui.Column(c).Width(520).Gap(12).Children(func() {
-			ui.Text(c, "安装插件").FontSize(18).Bold()
-			ui.Text(c, "支持本地插件包目录或远程插件包地址，安装后可在这里授权给 Agent。").
-				FontSize(12).
-				TextColor(t.TextMuted)
-
-			ui.Tabs(c, &p.installType, "本地插件包", "远程地址")
-			ui.TextInput(c, &p.installValue).Placeholder(placeholder)
-			if p.installErr != "" {
-				ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
+	components.Modal(c, components.ModalProps{
+		Open:  &p.installOpen,
+		Title: "安装插件",
+		Width: 520,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.installOpen = false
 			}
+			if components.Button(c, components.ButtonProps{
+				Label:   "安装",
+				Variant: components.ButtonPrimary,
+			}).Clicked() {
+				p.install()
+			}
+		},
+	}, func() {
+		ui.Text(c, "支持本地插件包目录或远程插件包地址，安装后可在这里授权给 Agent。").
+			FontSize(12).
+			TextColor(t.TextMuted)
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.installOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "安装",
-					Variant: components.ButtonPrimary,
-				}).Clicked() {
-					p.install()
-				}
-			})
-		})
+		ui.Tabs(c, &p.installType, "本地插件包", "远程地址")
+		ui.TextInput(c, &p.installValue).Placeholder(placeholder)
+		if p.installErr != "" {
+			ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
+		}
 	})
 }
 
 func (p *Page) uninstallModal(c *ui.Context) {
 	plugin := p.pluginByID(p.uninstallID)
-	if plugin == nil {
-		return
-	}
 	t := c.Theme()
-	name := plugin.Name
 
-	ui.Modal(c, &p.uninstallOpen, func() {
-		ui.Column(c).Width(420).Gap(12).Children(func() {
-			ui.Text(c, "卸载插件").FontSize(18).Bold()
-			ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后所有 Agent 将无法再调用该插件的工具。", name)).
-				FontSize(13).
-				TextColor(t.TextMuted)
+	var name string
+	if plugin != nil {
+		name = plugin.Name
+	}
 
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
-				if components.Button(c, components.ButtonProps{
-					Label:   "取消",
-					Variant: components.ButtonSecondary,
-				}).Clicked() {
-					p.uninstallOpen = false
-				}
-				if components.Button(c, components.ButtonProps{
-					Label:   "确认卸载",
-					Variant: components.ButtonDanger,
-				}).Clicked() {
-					p.uninstall()
-				}
-			})
-		})
+	// 关闭状态下也要构建，动画锚点才能停在 0，首次打开才有过渡。
+	props := components.ModalProps{
+		Open:  &p.uninstallOpen,
+		Title: "卸载插件",
+		Width: 420,
+	}
+	if plugin != nil {
+		props.Footer = func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.uninstallOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:   "确认卸载",
+				Variant: components.ButtonDanger,
+			}).Clicked() {
+				p.uninstall()
+			}
+		}
+	}
+
+	components.Modal(c, props, func() {
+		if plugin == nil {
+			return
+		}
+		ui.Text(c, fmt.Sprintf("确定卸载「%s」吗？卸载后所有 Agent 将无法再调用该插件的工具。", name)).
+			FontSize(13).
+			TextColor(t.TextMuted)
 	})
 }
 

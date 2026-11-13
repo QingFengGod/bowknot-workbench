@@ -99,7 +99,7 @@ func (s *Shell) view(c *ui.Context) {
 
 		ui.Column(c).Gap(t.Space(3)).Fill().Children(func() {
 			s.titleBar(c)
-			ui.Row(c).Gap(t.Space(3)).PaddingX(t.Space(3)).PaddingY(t.Space(3)).Grow(1).Background(t.Background).Children(func() {
+			ui.Row(c).Gap(t.Space(3)).Padding(0, t.Space(3), t.Space(3), t.Space(3)).Grow(1).Background(t.Background).Children(func() {
 				s.rail(c)
 				s.content(c)
 			})
@@ -112,7 +112,7 @@ func (s *Shell) view(c *ui.Context) {
 func (s *Shell) titleBar(c *ui.Context) {
 	t := c.Theme()
 
-	ui.Row(c).
+	bar := ui.Row(c).
 		FillWidth().
 		Height(titleBarHeight).
 		Shrink(0).
@@ -120,22 +120,23 @@ func (s *Shell) titleBar(c *ui.Context) {
 		Padding(0, 16).
 		AlignItems(ui.Center).
 		Justify(ui.SpaceBetween).
-		DragWindow().
-		Shadow(0, 0, 8, 0, theme.ShadowColor.Alpha(0.3)).
-		Children(func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				components.Icon(c, components.IconLogo, 24).TextColor(t.Accent)
-				ui.Text(c, "Bowknot Workbench").FontSize(13).Bold().MaxLines(1)
-			})
+		DragWindow()
+	theme.NormalShadow.Apply(c, bar)
 
-			active := c.WindowActive()
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				s.themeButton(c)
-				s.trafficLight(c, active, trafficMinimize, func() { s.win.Minimize() })
-				s.trafficLight(c, active, trafficMaximize, func() { s.win.ToggleMaximize() })
-				s.trafficLight(c, active, trafficClose, func() { s.win.Close() })
-			})
+	bar.Children(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			components.Icon(c, components.IconLogo, 24).TextColor(t.Accent)
+			ui.Text(c, "Bowknot Workbench").FontSize(13).Bold().MaxLines(1)
 		})
+
+		active := c.WindowActive()
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			s.themeButton(c)
+			s.trafficLight(c, active, trafficMinimize, func() { s.win.Minimize() })
+			s.trafficLight(c, active, trafficMaximize, func() { s.win.ToggleMaximize() })
+			s.trafficLight(c, active, trafficClose, func() { s.win.Close() })
+		})
+	})
 }
 
 // themeButton 是标题栏右侧的主题切换按钮：图标随当前模式变化，
@@ -182,9 +183,20 @@ func (s *Shell) themeButton(c *ui.Context) {
 			{"明亮模式", theme.ModeLight},
 		}
 		for _, it := range items {
-			components.PopoverItem(c, it.label, s.mode == it.mode, func() {
-				s.mode = it.mode
-				s.themeMenuOpen = false
+			components.PopoverItem(c, components.PopoverItemProps{
+				Label:    it.label,
+				Selected: s.mode == it.mode,
+				OnClick: func() {
+					s.mode = it.mode
+					s.themeMenuOpen = false
+				},
+				Content: func(c *ui.Context, selected bool) {
+					color := c.Theme().Text
+					if selected {
+						color = c.Theme().Accent
+					}
+					ui.Text(c, it.label).FontSize(14).TextColor(color).MaxLines(1)
+				},
 			})
 		}
 	})
@@ -221,20 +233,22 @@ var (
 func (s *Shell) rail(c *ui.Context) {
 	t := c.Theme()
 
-	ui.Column(c).
+	rail := ui.Column(c).
 		Width(86).
 		FillHeight().
 		Padding(4).
 		GapY(4).
 		Radius(t.Radius).
 		Background(t.Surface).
-		AlignItems(ui.Center).
-		Shadow(0, 0, 8, 0, theme.ShadowColor.Alpha(0.3)).
-		Children(func() {
-			for _, item := range navItems {
-				s.railItem(c, item)
-			}
-		})
+		AlignItems(ui.Center)
+
+	theme.NormalShadow.Apply(c, rail)
+
+	rail.Children(func() {
+		for _, item := range navItems {
+			s.railItem(c, item)
+		}
+	})
 }
 
 func (s *Shell) railItem(c *ui.Context, item navItem) {
@@ -247,7 +261,8 @@ func (s *Shell) railItem(c *ui.Context, item navItem) {
 		Radius(theme.Radius).
 		AlignItems(ui.Center).
 		Justify(ui.Center).
-		Label(item.Label)
+		Label(item.Label).
+		Cursor(ui.Cursor(ui.CursorPointer))
 
 	if selected {
 		btn.Background(t.Accent.Alpha(0.12)).TextColor(t.Accent)

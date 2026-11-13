@@ -47,7 +47,6 @@ type AppCatalog interface {
 	Apps() []AppItem
 	Preview(source InstallSource) (AppPreview, error)
 	Install(preview AppPreview) error
-	Rename(id string, displayName string) error
 	Uninstall(id string, keepData bool) error
 	SetToolEnabled(id string, toolName string, enabled bool) error
 	ClearData(id string) error
