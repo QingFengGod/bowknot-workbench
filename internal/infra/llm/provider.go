@@ -49,6 +49,40 @@ func WithRetry(inner Provider, opts RetryOptions) Provider {
 }
 
 func (p *retryProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, error) {
+	var out <-chan Chunk
+	err := p.doRetry(ctx, func() error {
+		chunks, err := p.inner.Stream(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = chunks
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Complete 与非流式实现一样可以安全重试：只有拿到完整结果才算成功。
+func (p *retryProvider) Complete(ctx context.Context, req ChatRequest) (string, error) {
+	var out string
+	err := p.doRetry(ctx, func() error {
+		text, err := p.inner.Complete(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = text
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// doRetry 在可重试错误上做指数退避，直到成功或耗尽次数。
+func (p *retryProvider) doRetry(ctx context.Context, attempt func() error) error {
 	maxRetries := p.opts.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 3
@@ -58,23 +92,21 @@ func (p *retryProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Chu
 		base = 500 * time.Millisecond
 	}
 
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		chunks, err := p.inner.Stream(ctx, req)
+	for attemptIndex := 0; ; attemptIndex++ {
+		err := attempt()
 		if err == nil {
-			return chunks, nil
+			return nil
 		}
-		lastErr = err
-		if !Retryable(err) || attempt >= maxRetries {
-			return nil, lastErr
+		if !Retryable(err) || attemptIndex >= maxRetries {
+			return err
 		}
 
-		backoff := base << attempt
+		backoff := base << attemptIndex
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, &Error{Kind: KindCanceled, Message: "请求已取消"}
+			return &Error{Kind: KindCanceled, Message: "请求已取消"}
 		case <-timer.C:
 		}
 	}

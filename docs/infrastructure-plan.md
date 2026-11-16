@@ -735,6 +735,8 @@ go test ./... -race
 
 阶段 0-6 已全部实现，当前状态：
 
+> 基础设施之后仍未实现的部分见 [remaining-work.md](./remaining-work.md)，实施顺序见 [next-plan.md](./next-plan.md)。
+
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
 | 0 骨架与依赖 | 完成 | `platform/{paths,lifecycle,id,logging}`、`infra/config`（含 MaskKey）、`modernc.org/sqlite` |

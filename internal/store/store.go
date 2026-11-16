@@ -45,6 +45,9 @@ type Store struct {
 	Groups        *GroupStore
 	Apps          *AppStore
 	Plugins       *PluginStore
+	ToolCalls     *ToolCallStore
+	Memories      *MemoryStore
+	MemoryDigests *MemoryDigestStore
 	Meta          *MetaStore
 }
 
@@ -159,6 +162,9 @@ func newStore(db *sql.DB, q querier, state *storeState, logger *slog.Logger, inT
 	s.Groups = &GroupStore{s: s}
 	s.Apps = &AppStore{s: s}
 	s.Plugins = &PluginStore{s: s}
+	s.ToolCalls = &ToolCallStore{s: s}
+	s.Memories = &MemoryStore{s: s}
+	s.MemoryDigests = &MemoryDigestStore{s: s}
 	s.Meta = &MetaStore{s: s}
 	return s
 }

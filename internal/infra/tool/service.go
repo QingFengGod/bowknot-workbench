@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 	"unicode/utf8"
 
@@ -60,6 +61,21 @@ func (s *Service) Registry() *Registry {
 	return s.registry
 }
 
+// Available 返回指定 Agent 当前可用的工具。
+// 停用的应用工具、未授权或已不存在的插件工具都从结果中剔除，
+// 避免把不可调用的工具声明给模型。
+func (s *Service) Available(ctx context.Context, agentID string) []ToolSpec {
+	specs := s.registry.List()
+	out := make([]ToolSpec, 0, len(specs))
+	for _, spec := range specs {
+		if err := s.authorize(ctx, spec, agentID); err == nil {
+			out = append(out, spec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // SyncApps 用 store 中的应用工具全量替换注册表中 app 来源的条目。
 func (s *Service) SyncApps(ctx context.Context) error {
 	apps, err := s.opts.Store.Apps.List(ctx)
@@ -90,6 +106,14 @@ func (s *Service) SyncPlugins(ctx context.Context) error {
 	}
 	s.registry.ReplaceSource(SourcePlugin, specs)
 	return nil
+}
+
+// RegisterBuiltin 用给定条目替换内置工具注册表。
+func (s *Service) RegisterBuiltin(specs ...ToolSpec) {
+	for i := range specs {
+		specs[i].Source = SourceBuiltin
+	}
+	s.registry.ReplaceSource(SourceBuiltin, specs)
 }
 
 // Execute 按注册表解析工具并执行；授权与确认不通过时返回可读错误。
@@ -167,6 +191,13 @@ func (s *Service) authorize(ctx context.Context, spec ToolSpec, agentID string) 
 			}
 		}
 		return fmt.Errorf("%w：Agent %s 未被授权使用插件 %s 的工具 %s", ErrNotAuthorized, agentID, spec.SourceID, spec.Name)
+
+	case SourceBuiltin:
+		// 内置工具由宿主直接提供；人设工具只允许主助手使用。
+		if spec.ID == PersonaToolID && agentID != MainAssistantAgentID {
+			return fmt.Errorf("%w：只有主助手可以修改人设", ErrNotAuthorized)
+		}
+		return nil
 
 	default:
 		return fmt.Errorf("未知工具来源：%s", spec.Source)

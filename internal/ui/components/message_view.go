@@ -25,6 +25,8 @@ type MessageViewProps struct {
 	OnStop    func()
 	OnRetry   func()
 	OnDelete  func()
+	// OnMemory 为「已记住」标记的点击回调，打开记忆面板。
+	OnMemory func()
 }
 
 // MessageView 是对话消息的统一渲染入口：外壳、正文、元信息与操作都在这里。
@@ -44,7 +46,7 @@ func MessageView(c *ui.Context, p MessageViewProps) ui.Element {
 			messageBody(c, m, p.OnStop, p.OnRetry)
 		},
 		Meta: func(c *ui.Context) {
-			messageMeta(c, m, isUser)
+			messageMeta(c, m, isUser, p.OnMemory)
 		},
 		Actions: func(c *ui.Context) {
 			messageActions(c, m, p.ShowRetry, p.OnRetry, p.OnDelete)
@@ -60,6 +62,10 @@ func messageBody(c *ui.Context, m contract.ChatMessage, onStop, onRetry func()) 
 		markdown.Stream(c, m.Content, messageMarkdown)
 	} else {
 		markdown.View(c, m.Content, messageMarkdown)
+	}
+
+	if len(m.ToolCalls) > 0 {
+		messageToolCalls(c, m.ToolCalls)
 	}
 
 	switch m.Status {
@@ -87,8 +93,64 @@ func messageBody(c *ui.Context, m contract.ChatMessage, onStop, onRetry func()) 
 	}
 }
 
+// messageToolCalls 渲染这条回复触发过的工具调用与结果。
+func messageToolCalls(c *ui.Context, calls []contract.ChatToolCall) {
+	t := c.Theme()
+
+	ui.Column(c).FillWidth().Gap(6).Margin(10, 0, 0, 0).Children(func() {
+		for _, call := range calls {
+			statusColor := t.TextMuted
+			switch call.Status {
+			case "ok":
+				statusColor = t.Success
+			case "failed":
+				statusColor = t.Danger
+			case "rejected":
+				statusColor = t.Warning
+			}
+
+			ui.Box(c).FillWidth().Padding(8).Radius(6).Background(t.SurfaceHover).Children(func() {
+				ui.Column(c).Gap(2).Children(func() {
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, toolCallName(call.ToolID)).FontSize(12).Bold().MaxLines(1)
+						ui.Text(c, toolCallStatus(call.Status)).FontSize(11).TextColor(statusColor).MaxLines(1)
+					})
+					if strings.TrimSpace(call.Arguments) != "" {
+						ui.Text(c, "参数："+call.Arguments).FontSize(11).TextColor(t.TextMuted).MaxLines(2)
+					}
+					if strings.TrimSpace(call.Result) != "" {
+						ui.Text(c, call.Result).FontSize(11).TextColor(t.TextMuted).MaxLines(3)
+					}
+				})
+			})
+		}
+	})
+}
+
+func toolCallName(toolID string) string {
+	if index := strings.LastIndex(toolID, "/"); index >= 0 && index+1 < len(toolID) {
+		return toolID[index+1:]
+	}
+	return toolID
+}
+
+func toolCallStatus(status string) string {
+	switch status {
+	case "running":
+		return "执行中"
+	case "ok":
+		return "已执行"
+	case "failed":
+		return "执行失败"
+	case "rejected":
+		return "已拒绝"
+	default:
+		return status
+	}
+}
+
 // messageMeta 渲染气泡下方的时间、情绪与记忆标记。
-func messageMeta(c *ui.Context, m contract.ChatMessage, isUser bool) {
+func messageMeta(c *ui.Context, m contract.ChatMessage, isUser bool, onMemory func()) {
 	t := c.Theme()
 
 	row := ui.Row(c).Gap(t.Space(3)).AlignItems(ui.Center)
@@ -101,7 +163,25 @@ func messageMeta(c *ui.Context, m contract.ChatMessage, isUser bool) {
 			ui.Text(c, "情绪："+emotionLabel(m.Emotion)).FontSize(11).TextColor(t.TextMuted)
 		}
 		if m.MemoryWritten {
-			ui.Text(c, "已记住").FontSize(11).TextColor(t.Accent)
+			if onMemory != nil {
+				mark := ui.ButtonBase(c).
+					Height(20).
+					PaddingX(6).
+					Radius(4).
+					AlignItems(ui.Center).
+					Justify(ui.Center)
+				if mark.Hovered() {
+					mark.Background(t.Accent.Alpha(0.1))
+				}
+				mark.Children(func() {
+					ui.Text(c, "已记住").FontSize(11).TextColor(t.Accent)
+				})
+				if mark.Tooltip("查看长期记忆").Clicked() {
+					onMemory()
+				}
+			} else {
+				ui.Text(c, "已记住").FontSize(11).TextColor(t.Accent)
+			}
 		}
 	})
 }

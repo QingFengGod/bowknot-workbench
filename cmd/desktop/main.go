@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
 	"bowknot-workbench/internal/app"
 	"bowknot-workbench/internal/backend"
@@ -11,6 +12,7 @@ import (
 	"bowknot-workbench/internal/infra/config"
 	"bowknot-workbench/internal/infra/llm"
 	pkgs "bowknot-workbench/internal/infra/package"
+	"bowknot-workbench/internal/infra/tool"
 	"bowknot-workbench/internal/platform/lifecycle"
 	"bowknot-workbench/internal/platform/logging"
 	"bowknot-workbench/internal/platform/paths"
@@ -62,7 +64,8 @@ func main() {
 	db, err := store.Open(lc.Context(), store.Options{
 		Path:   dataPaths.Database,
 		Logger: logger,
-		Seed:   os.Getenv("BOWKNOT_SEED") != "0",
+		// 默认不导入演示会话，只有显式设置 BOWKNOT_SEED=1 的开发场景才写入。
+		Seed: os.Getenv("BOWKNOT_SEED") == "1",
 	})
 	if err != nil {
 		logger.Error("打开数据存储失败", "error", err)
@@ -84,6 +87,13 @@ func main() {
 		"apiKey", config.MaskKey(cfg.Model.APIKey),
 	)
 
+	// 启动时向网关查询一次模型列表并缓存，避免 UI 每次进入页面都请求外部服务；
+	// 超时或查询失败时退回配置的默认模型。
+	modelCtx, cancelModels := context.WithTimeout(lc.Context(), 10*time.Second)
+	models := app.ResolveModels(modelCtx, provider, cfg.Model.DefaultModel, logger)
+	cancelModels()
+	logger.Info("模型列表已缓存", "count", len(models))
+
 	// 包安装器负责应用/插件包的落盘、升级与卸载；启动时清空上次异常退出
 	// 留下的安装残留，安装内置包并重试未完成的旧版本清理。
 	installer := pkgs.NewInstaller(pkgs.Options{
@@ -99,20 +109,45 @@ func main() {
 	}
 	installer.SweepOldVersions(lc.Context())
 
-	assistant := app.NewAssistantService(db, logger, provider)
-	agents := app.NewAgentService(db, logger, provider)
+	// 工具服务是应用/插件工具的唯一执行入口，启动时把已安装的工具同步进注册表。
+	// 危险工具的审批通过 ApprovalHub 转发到 UI，用户确认后才真正执行。
+	approvals := app.NewApprovalHub()
+	toolSvc := tool.NewService(tool.Options{
+		Store:    db,
+		Logger:   logger,
+		Approver: approvals.Approve,
+		Executor: app.NewToolExecutor(db),
+	})
+	toolSvc.RegisterBuiltin(tool.PersonaToolSpec())
+	if err := toolSvc.SyncApps(lc.Context()); err != nil {
+		logger.Warn("同步应用工具失败", "error", err)
+	}
+	if err := toolSvc.SyncPlugins(lc.Context()); err != nil {
+		logger.Warn("同步插件工具失败", "error", err)
+	}
+
+	assistant := app.NewAssistantService(db, logger, provider, toolSvc, approvals)
+	agents := app.NewAgentService(db, logger, provider, toolSvc, approvals)
+	assistant.SetModels(models)
+	agents.SetModels(models)
+	// 长期记忆服务负责抽取、检索与摘要；助手与 Agent 共用同一个实例。
+	memory := app.NewMemoryService(db, logger, provider)
+	assistant.SetMemory(memory)
+	agents.SetMemory(memory)
 	lc.Add("assistant", assistant.Shutdown)
 	lc.Add("agents", agents.Shutdown)
+	lc.Add("memory", memory.Shutdown)
 
 	appBackend := backend.NewApp(version)
-	plugins := backend.NewPluginService()
-	appCatalog := backend.NewAppCatalog()
+	plugins := app.NewPluginService(db, installer, toolSvc, logger)
+	appCatalog := app.NewAppCatalog(db, installer, toolSvc, logger)
 	desktop := shell.New(shell.Deps{
 		App:       appBackend,
 		Plugins:   plugins,
 		Apps:      appCatalog,
 		Assistant: assistant,
 		Agents:    agents,
+		Memory:    memory,
 	})
 
 	// mygo 在系统强制退出等场景可能直接结束进程，OnQuit 是最后可靠的清理时机。

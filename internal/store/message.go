@@ -47,6 +47,57 @@ func (m *MessageStore) List(ctx context.Context, conversationID string) ([]domai
 	return out, wrapErr(rows.Err())
 }
 
+// ListPage 按 seq 取一页消息：beforeSeq <= 0 表示从最新开始，
+// 返回结果按 seq 升序排列，hasMore 表示还有更早的消息。
+func (m *MessageStore) ListPage(ctx context.Context, conversationID string, beforeSeq int64, limit int) ([]domain.Message, bool, error) {
+	if err := m.s.ensureOpen(); err != nil {
+		return nil, false, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `SELECT ` + messageColumns + ` FROM message WHERE conversation_id = ?`
+	args := []any{conversationID}
+	if beforeSeq > 0 {
+		query += ` AND seq < ?`
+		args = append(args, beforeSeq)
+	}
+	// 多取一条用于判断是否还有更早的消息。
+	query += ` ORDER BY seq DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := m.s.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, wrapErr(err)
+	}
+	defer rows.Close()
+
+	desc := make([]domain.Message, 0, limit+1)
+	for rows.Next() {
+		item, err := scanMessage(rows)
+		if err != nil {
+			return nil, false, wrapErr(err)
+		}
+		desc = append(desc, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, wrapErr(err)
+	}
+
+	hasMore := len(desc) > limit
+	if hasMore {
+		desc = desc[:limit]
+	}
+
+	// 反转为升序，直接用于渲染。
+	out := make([]domain.Message, len(desc))
+	for i, item := range desc {
+		out[len(desc)-1-i] = item
+	}
+	return out, hasMore, nil
+}
+
 // Append 在事务内分配 seq 并写入消息；返回带 seq 的副本。
 func (m *MessageStore) Append(ctx context.Context, item domain.Message) (domain.Message, error) {
 	if m.s.inTx {
@@ -101,9 +152,26 @@ func (m *MessageStore) Update(ctx context.Context, item domain.Message) error {
 	return ensureAffected(result, err)
 }
 
+// SetMemoryWritten 只更新记忆标记，避免覆盖流式写入的正文与状态。
+func (m *MessageStore) SetMemoryWritten(ctx context.Context, id string, written bool) error {
+	if err := m.s.ensureOpen(); err != nil {
+		return err
+	}
+
+	result, err := m.s.q.ExecContext(ctx,
+		`UPDATE message SET memory_written = ? WHERE id = ?`,
+		boolInt(written), id,
+	)
+	return ensureAffected(result, err)
+}
+
 func (m *MessageStore) Delete(ctx context.Context, id string) error {
 	if err := m.s.ensureOpen(); err != nil {
 		return err
+	}
+	// tool_call 没有外键，删除消息时同步清理其调用记录。
+	if _, err := m.s.q.ExecContext(ctx, `DELETE FROM tool_call WHERE message_id = ?`, id); err != nil {
+		return wrapErr(err)
 	}
 
 	result, err := m.s.q.ExecContext(ctx, `DELETE FROM message WHERE id = ?`, id)

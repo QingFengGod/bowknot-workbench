@@ -15,6 +15,13 @@ const (
 	fakeChunkRunes = 3
 )
 
+// FakeReply 是一次脚本化回复：正文与可选的工具调用。
+// 工具调用会作为一个独立的 Chunk 在正文之后发出。
+type FakeReply struct {
+	Content   string
+	ToolCalls []ToolCall
+}
+
 // FakeOptions 控制 Fake 的行为，主要用于演示与测试。
 type FakeOptions struct {
 	// Interval 是两帧增量之间的间隔，<=0 时取默认 30ms。
@@ -23,8 +30,12 @@ type FakeOptions struct {
 	ChunkSize int
 	// Failures 让前 N 次 Stream 返回可重试错误，用于验证重试逻辑。
 	Failures int
-	// Reply 自定义回复生成；为 nil 时使用内置演示文案。
-	Reply func(req ChatRequest) string
+	// Reply 按第 n 次（从 0 开始）调用生成脚本化回复；
+	// 为 nil 时使用内置演示文案。调用序号可用于模拟多轮工具调用。
+	Reply func(call int, req ChatRequest) FakeReply
+	// CompleteReply 按第 n 次 Complete 调用生成完整文本；
+	// 为 nil 时返回空 JSON 数组，记忆抽取与摘要拿到的是「没有内容」。
+	CompleteReply func(call int, req ChatRequest) string
 	// Models 为空时返回内置演示模型列表。
 	Models []ModelInfo
 }
@@ -32,9 +43,10 @@ type FakeOptions struct {
 // Fake 是假实现：按固定节奏把一段演示文案切成增量输出，
 // 支持 ctx 取消与失败注入，行为与原内存 mock 的流式体验一致。
 type Fake struct {
-	mu    sync.Mutex
-	opts  FakeOptions
-	calls int
+	mu        sync.Mutex
+	opts      FakeOptions
+	calls     int
+	completes int
 }
 
 func NewFake(opts FakeOptions) *Fake {
@@ -50,15 +62,17 @@ func (f *Fake) Calls() int {
 
 func (f *Fake) Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, error) {
 	f.mu.Lock()
+	callIndex := f.calls
 	f.calls++
 	failures := f.opts.Failures
 	f.mu.Unlock()
 
-	if f.calls <= failures {
+	if callIndex < failures {
 		return nil, &Error{Kind: KindServer, Message: "模拟服务暂时不可用"}
 	}
 
-	text := f.replyFor(req)
+	reply := f.replyFor(callIndex, req)
+	text := reply.Content
 	interval := f.opts.Interval
 	if interval <= 0 {
 		interval = fakeInterval
@@ -66,6 +80,12 @@ func (f *Fake) Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, error
 	chunkSize := f.opts.ChunkSize
 	if chunkSize <= 0 {
 		chunkSize = fakeChunkRunes
+	}
+	toolCalls := make([]ToolCall, len(reply.ToolCalls))
+	copy(toolCalls, reply.ToolCalls)
+	// 脚本里的工具调用是一个完整列表，按下标补齐 Index，避免其他字段残留。
+	for i := range toolCalls {
+		toolCalls[i].Index = i
 	}
 
 	out := make(chan Chunk, 8)
@@ -106,9 +126,40 @@ func (f *Fake) Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, error
 				return
 			}
 		}
+		if len(toolCalls) > 0 {
+			if !emit(Chunk{ToolCalls: toolCalls}) {
+				return
+			}
+		}
 		emit(Chunk{Done: true})
 	}()
 	return out, nil
+}
+
+// Complete 直接返回脚本化文本，默认为空 JSON 数组。
+// 与 Stream 使用独立计数，互不干扰。
+func (f *Fake) Complete(ctx context.Context, req ChatRequest) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", &Error{Kind: KindCanceled, Message: "请求已取消"}
+	}
+
+	f.mu.Lock()
+	callIndex := f.completes
+	f.completes++
+	reply := f.opts.CompleteReply
+	f.mu.Unlock()
+
+	if reply == nil {
+		return "[]", nil
+	}
+	return reply(callIndex, req), nil
+}
+
+// Completes 返回 Complete 被调用的次数，测试用来断言抽取与摘要行为。
+func (f *Fake) Completes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.completes
 }
 
 func (f *Fake) Models(ctx context.Context) ([]ModelInfo, error) {
@@ -122,15 +173,15 @@ func (f *Fake) Models(ctx context.Context) ([]ModelInfo, error) {
 	}, nil
 }
 
-func (f *Fake) replyFor(req ChatRequest) string {
+func (f *Fake) replyFor(call int, req ChatRequest) FakeReply {
 	if f.opts.Reply != nil {
-		return f.opts.Reply(req)
+		return f.opts.Reply(call, req)
 	}
 	return fakeReply(req)
 }
 
 // fakeReply 根据最后一条用户消息生成确定的演示文案，与原内存 mock 的模板一致。
-func fakeReply(req ChatRequest) string {
+func fakeReply(req ChatRequest) FakeReply {
 	text := ""
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
@@ -152,7 +203,7 @@ func fakeReply(req ChatRequest) string {
 		fmt.Sprintf("关于「%s」，我的理解是这样：\n\n1. 先确认目标和约束\n2. 拆出最小可执行的一步\n3. 完成后再回头复盘\n\n（%s · 演示回复，未接入真实模型）", title, name),
 		fmt.Sprintf("收到「%s」。\n\n这是一条演示回复，用于验证消息上屏、流式输出和停止操作。切换模型后，回复里的模型名会同步变化（当前：%s）。", title, name),
 	}
-	return templates[hash%len(templates)]
+	return FakeReply{Content: templates[hash%len(templates)]}
 }
 
 func snippet(text string, limit int) string {

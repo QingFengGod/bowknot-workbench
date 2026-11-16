@@ -151,6 +151,11 @@ func (s *agentService) Messages(conversationID string) []contract.ChatMessage {
 	return append([]contract.ChatMessage(nil), s.messages[conversationID]...)
 }
 
+// MessagesPage 是内存实现，不做分页，一次性返回全部消息。
+func (s *agentService) MessagesPage(conversationID string, beforeSeq int64, limit int) contract.MessagePage {
+	return contract.MessagePage{Items: s.Messages(conversationID)}
+}
+
 func (s *agentService) Models() []contract.ChatModel {
 	return []contract.ChatModel{
 		{ID: "bk-flash", Name: "Bowknot Flash", Description: "日常对话，响应最快"},

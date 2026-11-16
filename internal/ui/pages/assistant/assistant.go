@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"bowknot-workbench/internal/contract"
@@ -22,8 +23,9 @@ type Hooks struct {
 
 // Page 是助手页的原生实现。
 type Page struct {
-	svc   contract.AssistantService
-	hooks Hooks
+	svc    contract.AssistantService
+	memory contract.MemoryService
+	hooks  Hooks
 
 	sessions   []contract.ChatSession
 	models     []contract.ChatModel
@@ -33,6 +35,13 @@ type Page struct {
 
 	activeID string
 	messages []contract.ChatMessage
+	// 消息分页：oldestSeq 是已加载消息的最小 seq，hasMore 表示还有更早的消息。
+	oldestSeq int64
+	hasMore   bool
+	// scrollShift 标记头部刚插入历史消息，下一帧需要按高度差补偿滚动位置。
+	scrollShift  bool
+	previousMaxY float32
+	previousY    float32
 
 	draft   string
 	sendErr string
@@ -67,12 +76,36 @@ type Page struct {
 	deleteMessageOpen    bool
 	deleteMessageID      string
 	deleteMessageSession string
+
+	// 危险工具审批状态，由流式审批事件驱动。
+	approvalOpen   bool
+	approvalRunID  string
+	approvalCallID string
+	approvalTool   string
+	approvalArgs   string
+
+	// 长期记忆面板及其编辑、清空状态。
+	memoryOpen      bool
+	memoryEditOpen  bool
+	memoryEditID    string
+	memoryEditValue string
+	memoryEditErr   string
+	memoryClearOpen bool
+	memoryState     components.MemoryPanelState
+	// memoryRefreshPending 避免面板打开时重复启动刷新定时器。
+	memoryRefreshPending bool
+
+	// 主助手人设：可从标题栏随时查看与编辑。
+	personaOpen  bool
+	personaDraft contract.AssistantPersona
+	personaErr   string
 }
 
 // New 创建助手页。
-func New(svc contract.AssistantService, hooks Hooks) *Page {
+func New(svc contract.AssistantService, memory contract.MemoryService, hooks Hooks) *Page {
 	p := &Page{
 		svc:      svc,
+		memory:   memory,
 		hooks:    hooks,
 		streams:  map[string]string{},
 		follow:   true,
@@ -97,9 +130,11 @@ func New(svc contract.AssistantService, hooks Hooks) *Page {
 func (p *Page) View(c *ui.Context) {
 	if !p.shown {
 		p.shown = true
-		p.autoReply(p.activeID)
+		p.greetOnLaunch()
 	}
+	p.scheduleMemoryRefresh()
 
+	p.reconcileScrollShift()
 	p.followEnd()
 	t := c.Theme()
 
@@ -131,6 +166,19 @@ func (p *Page) View(c *ui.Context) {
 	p.renameModal(c)
 	p.deleteModal(c)
 	p.deleteMessageModal(c)
+	p.approvalModal(c)
+	p.personaModal(c)
+	components.MemoryModal(c, components.MemoryModalProps{
+		Service:   p.memory,
+		Open:      &p.memoryOpen,
+		State:     &p.memoryState,
+		EditOpen:  &p.memoryEditOpen,
+		EditID:    &p.memoryEditID,
+		EditValue: &p.memoryEditValue,
+		EditErr:   &p.memoryEditErr,
+		ClearOpen: &p.memoryClearOpen,
+		OnChanged: p.reloadMessages,
+	})
 }
 
 func (p *Page) header(c *ui.Context, panelProgress float32) {
@@ -159,32 +207,73 @@ func (p *Page) header(c *ui.Context, panelProgress float32) {
 				}
 			})
 
-			toggle := ui.ButtonBase(c).
-				Width(22).
-				Height(22).
-				Radius(4).
-				AlignItems(ui.Center).
-				Justify(ui.Center).
-				TextColor(t.TextMuted)
-			if toggle.Hovered() {
-				toggle.Background(t.SurfacePressed).TextColor(t.Text)
-			}
-			// 图标随展开进度平滑旋转，收起时转到 180°。
-			toggle.Children(func() {
-				components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - panelProgress))
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				personaBtn := ui.ButtonBase(c).
+					Width(22).
+					Height(22).
+					Radius(4).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					TextColor(t.TextMuted)
+				if personaBtn.Hovered() {
+					personaBtn.Background(t.SurfacePressed).TextColor(t.Text)
+				}
+				personaBtn.Children(func() {
+					components.Icon(c, components.IconUser, 14)
+				})
+				if personaBtn.Tooltip("助手人设").Clicked() {
+					p.openPersona()
+				}
+
+				memBtn := ui.ButtonBase(c).
+					Width(22).
+					Height(22).
+					Radius(4).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					TextColor(t.TextMuted)
+				if memBtn.Hovered() {
+					memBtn.Background(t.SurfacePressed).TextColor(t.Text)
+				}
+				memBtn.Children(func() {
+					components.Icon(c, components.IconMemory, 14)
+				})
+				if memBtn.Tooltip("长期记忆").Clicked() {
+					p.memoryOpen = true
+				}
+
+				toggle := ui.ButtonBase(c).
+					Width(22).
+					Height(22).
+					Radius(4).
+					AlignItems(ui.Center).
+					Justify(ui.Center).
+					TextColor(t.TextMuted)
+				if toggle.Hovered() {
+					toggle.Background(t.SurfacePressed).TextColor(t.Text)
+				}
+				// 图标随展开进度平滑旋转，收起时转到 180°。
+				toggle.Children(func() {
+					components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - panelProgress))
+				})
+				label := "收起会话列表"
+				if p.panelCollapsed {
+					label = "展开会话列表"
+				}
+				if toggle.Tooltip(label).Clicked() {
+					p.panelCollapsed = !p.panelCollapsed
+				}
 			})
-			label := "收起会话列表"
-			if p.panelCollapsed {
-				label = "展开会话列表"
-			}
-			if toggle.Tooltip(label).Clicked() {
-				p.panelCollapsed = !p.panelCollapsed
-			}
 		})
 }
 
 func (p *Page) messageList(c *ui.Context) {
 	t := c.Theme()
+
+	// 滚到接近顶部时补一页更早的消息。
+	if p.hasMore && !p.follow && p.chatScroll.MaxY > 0 && p.chatScroll.Y <= 32 {
+		p.loadEarlier()
+	}
 
 	ui.Column(c).Grow(1).Children(func() {
 		if len(p.messages) == 0 {
@@ -233,6 +322,44 @@ func (p *Page) messageList(c *ui.Context) {
 	})
 }
 
+// scheduleMemoryRefresh 在记忆面板打开时每 2 秒请求一次重绘，
+// 让异步抽取完成的新记忆无需重启应用就能出现。
+func (p *Page) scheduleMemoryRefresh() {
+	if !p.memoryOpen || p.memoryRefreshPending || p.hooks.Update == nil {
+		return
+	}
+	p.memoryRefreshPending = true
+	go func() {
+		time.Sleep(2 * time.Second)
+		p.hooks.Update(func() {
+			p.memoryRefreshPending = false
+			p.memoryState.Loaded = false
+		})
+	}()
+}
+
+// greetOnLaunch 在应用启动后的首次进入时接收流式问候；
+// 持久化实现没有启动（如内存后端）时退回旧的自动回复逻辑。
+func (p *Page) greetOnLaunch() {
+	if p.svc == nil {
+		return
+	}
+	sessionID, messageID, events, started := p.svc.GreetOnLaunch()
+	if !started {
+		p.autoReply(p.activeID)
+		return
+	}
+
+	p.reloadSessions()
+	p.activeID = sessionID
+	p.reloadMessages()
+	if events != nil {
+		p.streams[sessionID] = messageID
+		p.consume(sessionID, events)
+	}
+	p.stickToBottom()
+}
+
 func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	return components.MessageView(c, components.MessageViewProps{
 		Message:    m,
@@ -241,6 +368,7 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 		OnStop:     func() { p.stop(m.ConversationID) },
 		OnRetry:    func() { p.regenerate(m.ID) },
 		OnDelete:   func() { p.openDeleteMessage(m) },
+		OnMemory:   func() { p.memoryOpen = true },
 	})
 }
 
@@ -439,17 +567,16 @@ func (p *Page) sessionRow(c *ui.Context, s contract.ChatSession) {
 	}
 
 	components.SessionItem(c, components.SessionItemProps{
-		Title:          s.Title,
-		Summary:        s.Summary,
-		UpdatedAt:      s.UpdatedAt,
-		Active:         s.ID == p.activeID,
-		Pinned:         s.Pinned,
-		MenuOpen:       menuOpen,
-		DeleteDisabled: len(p.sessions) <= 1,
-		OnSelect:       func() { p.selectSession(s.ID) },
-		OnRename:       func() { p.openRename(s) },
-		OnTogglePin:    func() { p.togglePin(s) },
-		OnDelete:       func() { p.openDelete(s) },
+		Title:       s.Title,
+		Summary:     s.Summary,
+		UpdatedAt:   s.UpdatedAt,
+		Active:      s.ID == p.activeID,
+		Pinned:      s.Pinned,
+		MenuOpen:    menuOpen,
+		OnSelect:    func() { p.selectSession(s.ID) },
+		OnRename:    func() { p.openRename(s) },
+		OnTogglePin: func() { p.togglePin(s) },
+		OnDelete:    func() { p.openDelete(s) },
 	})
 }
 
@@ -498,17 +625,108 @@ func (p *Page) deleteModal(c *ui.Context) {
 	}
 
 	switch ui.AlertDialog(c, &p.deleteOpen, "删除会话",
-		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title), "取消", "删除") {
+		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title), "删除", "取消") {
 	case 0:
 		p.deleteSession()
 	}
 }
 
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") {
+	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "删除", "取消") {
 	case 0:
 		p.deleteMessage()
 	}
+}
+
+// personaModal 编辑主助手人设：姓名、性别、年龄、性格、角色与特殊要求。
+func (p *Page) personaModal(c *ui.Context) {
+	t := c.Theme()
+
+	canSave := strings.TrimSpace(p.personaDraft.Name) != ""
+
+	field := func(label, placeholder string, value *string) {
+		ui.Text(c, label).FontSize(12).TextColor(t.TextMuted)
+		input := ui.TextInput(c, value).Placeholder(placeholder)
+		if input.Changed() {
+			p.personaErr = ""
+		}
+	}
+
+	components.Modal(c, components.ModalProps{
+		Open:  &p.personaOpen,
+		Title: "助手人设",
+		Width: 520,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.personaOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:    "保存",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSave,
+			}).Clicked() {
+				p.savePersona()
+			}
+		},
+	}, func() {
+		ui.Text(c, "人设会影响助手的自我介绍、说话语气与每次回复，保存后立即生效。").
+			FontSize(12).
+			TextColor(t.TextMuted)
+
+		field("姓名", "Bowknot", &p.personaDraft.Name)
+		ui.Row(c).FillWidth().Gap(12).Children(func() {
+			ui.Column(c).Grow(1).Gap(4).Children(func() {
+				field("性别", "例如：女", &p.personaDraft.Gender)
+			})
+			ui.Column(c).Grow(1).Gap(4).Children(func() {
+				field("年龄", "例如：22 岁", &p.personaDraft.Age)
+			})
+		})
+		field("性格", "例如：温柔、直接、好奇", &p.personaDraft.Personality)
+		field("角色或职能", "例如：你的私人助理", &p.personaDraft.Role)
+		field("对用户的称呼", "例如：老板、小明", &p.personaDraft.UserName)
+
+		ui.Text(c, "其它要求").FontSize(12).TextColor(t.TextMuted)
+		area := ui.TextAreaBase(c, &p.personaDraft.Custom).
+			Placeholder("例如：回答先给结论，遇到风险要提醒。").
+			Lines(3, 6).
+			MaxLength(300)
+		if area.Changed() {
+			p.personaErr = ""
+		}
+
+		if p.personaErr != "" {
+			ui.Text(c, p.personaErr).FontSize(12).TextColor(t.Danger)
+		}
+	})
+}
+
+func (p *Page) openPersona() {
+	p.personaDraft = p.persona()
+	p.personaErr = ""
+	p.personaOpen = true
+}
+
+func (p *Page) persona() contract.AssistantPersona {
+	if p.svc == nil {
+		return contract.DefaultAssistantPersona()
+	}
+	return p.svc.Persona()
+}
+
+func (p *Page) savePersona() {
+	if p.svc == nil {
+		return
+	}
+	if err := p.svc.SetPersona(p.personaDraft); err != nil {
+		p.personaErr = err.Error()
+		return
+	}
+	p.personaErr = ""
+	p.personaOpen = false
 }
 
 // send 用输入框里的草稿发送，供按钮调用。
@@ -523,6 +741,18 @@ func (p *Page) sendText(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || p.svc == nil || p.streaming(p.activeID) {
 		return false
+	}
+
+	// 没有会话时直接发消息，自动创建一个新会话。
+	if p.activeID == "" {
+		session := p.svc.CreateSession()
+		if session.ID == "" {
+			p.sendErr = "创建会话失败，请重试"
+			return false
+		}
+		p.sessions = append([]contract.ChatSession{session}, p.sessions...)
+		p.activeID = session.ID
+		p.follow = true
 	}
 
 	sessionID := p.activeID
@@ -597,6 +827,14 @@ func (p *Page) consume(sessionID string, events <-chan contract.ChatEvent) {
 
 // applyEvent 用后端快照覆盖消息，避免重复拼接。
 func (p *Page) applyEvent(sessionID string, ev contract.ChatEvent) {
+	if ev.Type == contract.ChatEventApproval {
+		p.openApproval(ev)
+		return
+	}
+	if ev.Type == contract.ChatEventToolCall || ev.Type == contract.ChatEventToolResult {
+		return
+	}
+
 	if p.activeID == sessionID {
 		found := false
 		for i := range p.messages {
@@ -620,7 +858,50 @@ func (p *Page) applyEvent(sessionID string, ev contract.ChatEvent) {
 	if ev.Done {
 		delete(p.streams, sessionID)
 		p.reloadSessions()
+		// 重新读取消息，把刚落库的工具调用一并展示出来。
+		if p.activeID == sessionID {
+			p.reloadMessages()
+		}
 	}
+}
+
+// openApproval 弹出危险工具的确认框。
+func (p *Page) openApproval(ev contract.ChatEvent) {
+	p.approvalRunID = ev.RunID
+	p.approvalCallID = ev.ToolCallID
+	p.approvalTool = ev.ToolName
+	p.approvalArgs = ev.Arguments
+	p.approvalOpen = true
+}
+
+func (p *Page) approvalModal(c *ui.Context) {
+	if !p.approvalOpen {
+		return
+	}
+
+	args := strings.TrimSpace(p.approvalArgs)
+	if args == "" {
+		args = "无"
+	}
+	text := fmt.Sprintf("助手请求执行危险工具「%s」，参数：%s。是否允许本次执行？", p.approvalTool, args)
+	// 「拒绝」放在最后，回车默认不执行危险操作。
+	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "允许", "拒绝") {
+	case 0:
+		p.resolveApproval(true)
+	case 1:
+		p.resolveApproval(false)
+	}
+}
+
+func (p *Page) resolveApproval(approved bool) {
+	if svc, ok := p.svc.(contract.ApprovalService); ok {
+		svc.ResolveApproval(p.approvalRunID, p.approvalCallID, approved)
+	}
+	p.approvalOpen = false
+	p.approvalRunID = ""
+	p.approvalCallID = ""
+	p.approvalTool = ""
+	p.approvalArgs = ""
 }
 
 func (p *Page) selectSession(id string) {
@@ -688,6 +969,8 @@ func (p *Page) deleteSession() {
 		return
 	}
 	if err := p.svc.DeleteSession(p.deleteID); err != nil {
+		mygo.Dialog.Error("删除会话失败", err.Error())
+		p.deleteOpen = false
 		return
 	}
 	delete(p.streams, p.deleteID)
@@ -753,11 +1036,49 @@ func (p *Page) reloadModels() {
 }
 
 func (p *Page) reloadMessages() {
+	p.messages = nil
+	p.oldestSeq = 0
+	p.hasMore = false
 	if p.svc == nil || p.activeID == "" {
-		p.messages = nil
 		return
 	}
-	p.messages = p.svc.Messages(p.activeID)
+	page := p.svc.MessagesPage(p.activeID, 0, contract.DefaultMessagePageSize)
+	p.messages = page.Items
+	p.hasMore = page.HasMore
+	if len(page.Items) > 0 {
+		p.oldestSeq = page.Items[0].Seq
+	}
+}
+
+// loadEarlier 加载一页更早的消息并插到列表头部。
+// 头部插入会抬高列表，记录当前滚动位置供下一帧补偿。
+func (p *Page) loadEarlier() {
+	if p.svc == nil || p.activeID == "" || !p.hasMore || p.oldestSeq <= 0 {
+		return
+	}
+	page := p.svc.MessagesPage(p.activeID, p.oldestSeq, contract.DefaultMessagePageSize)
+	p.hasMore = page.HasMore
+	if len(page.Items) == 0 {
+		return
+	}
+
+	p.previousMaxY = p.chatScroll.MaxY
+	p.previousY = p.chatScroll.Y
+	p.scrollShift = true
+	p.follow = false
+	p.messages = append(page.Items, p.messages...)
+	p.oldestSeq = page.Items[0].Seq
+}
+
+// reconcileScrollShift 按列表增长的高度平移滚动位置，避免历史消息插入后视口跳动。
+func (p *Page) reconcileScrollShift() {
+	if !p.scrollShift {
+		return
+	}
+	if p.chatScroll.MaxY > p.previousMaxY {
+		p.chatScroll.Y = p.previousY + (p.chatScroll.MaxY - p.previousMaxY)
+	}
+	p.scrollShift = false
 }
 
 // stickToBottom 让下一次重绘贴住消息列表底部。

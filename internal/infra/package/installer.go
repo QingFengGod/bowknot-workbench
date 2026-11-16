@@ -195,6 +195,7 @@ func (i *Installer) finalize(ctx context.Context, kind, sourceType, sourceValue,
 				SourceType:  sourceType,
 				SourceValue: sourceValue,
 				InstallDir:  target,
+				Entry:       manifest.Entry,
 				InstalledAt: now,
 			}
 			if err := tx.Apps.Upsert(ctx, item); err != nil {
@@ -204,7 +205,7 @@ func (i *Installer) finalize(ctx context.Context, kind, sourceType, sourceValue,
 		case KindPlugin:
 			item := domain.Plugin{
 				ID:          manifest.ID,
-				Name:        manifest.ID,
+				Name:        manifest.Name,
 				Version:     manifest.Version,
 				Description: manifest.Description,
 				IconText:    firstRune(manifest.Name),

@@ -44,6 +44,8 @@ type AgentService interface {
 	Groups() []AgentGroup
 	Sessions(agentID string) []AgentSession
 	Messages(conversationID string) []ChatMessage
+	// MessagesPage 读取一页消息：beforeSeq <= 0 从最新开始，limit <= 0 用默认页大小。
+	MessagesPage(conversationID string, beforeSeq int64, limit int) MessagePage
 	Models() []ChatModel
 
 	CreateAgent(name, description, persona string) AgentInfo

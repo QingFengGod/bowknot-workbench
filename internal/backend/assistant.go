@@ -29,6 +29,7 @@ type assistantService struct {
 	scripts    map[string]mockScript
 	autoPlayed map[string]bool
 	seq        int
+	persona    contract.AssistantPersona
 }
 
 // NewAssistantService 创建内存版助手服务，初始数据对齐 Web 端演示会话。
@@ -157,6 +158,50 @@ func (s *assistantService) Messages(sessionID string) []contract.ChatMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]contract.ChatMessage(nil), s.messages[sessionID]...)
+}
+
+// MessagesPage 是内存实现，不做分页，一次性返回全部消息。
+func (s *assistantService) MessagesPage(sessionID string, beforeSeq int64, limit int) contract.MessagePage {
+	return contract.MessagePage{Items: s.Messages(sessionID)}
+}
+
+func (s *assistantService) Persona() contract.AssistantPersona {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.persona.Name == "" {
+		return contract.DefaultAssistantPersona()
+	}
+	return s.persona
+}
+
+func (s *assistantService) SetPersona(persona contract.AssistantPersona) error {
+	persona.Name = strings.TrimSpace(persona.Name)
+	if persona.Name == "" {
+		return fmt.Errorf("人设姓名不能为空")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persona = persona
+	return nil
+}
+
+// GreetOnLaunch 由持久化实现负责，内存实现不主动问候。
+func (s *assistantService) GreetOnLaunch() (string, string, <-chan contract.ChatEvent, bool) {
+	return "", "", nil, false
+}
+
+// Greeting 是内存实现，固定返回首次使用时的自我介绍。
+func (s *assistantService) Greeting() string {
+	persona := s.Persona()
+	name := persona.Name
+	if name == "" {
+		name = "Bowknot"
+	}
+	role := persona.Role
+	if role == "" {
+		role = "你的小助手"
+	}
+	return fmt.Sprintf("你好呀，我是%s，%s。我该怎么称呼你呢？", name, role)
 }
 
 func (s *assistantService) Models() []contract.ChatModel {

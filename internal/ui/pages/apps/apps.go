@@ -21,6 +21,8 @@ type Hooks struct {
 	Open func(app contract.AppItem)
 	// Close 关闭应用窗口。
 	Close func(id string)
+	// SelectPackage 打开系统文件选择器，返回选中的应用包路径；取消时返回空字符串。
+	SelectPackage func() (string, error)
 }
 
 // Page 是 Apps 页的原生实现。
@@ -374,7 +376,7 @@ func (p *Page) installModal(c *ui.Context) {
 
 	placeholder := "例如：D:\\bowknot-apps\\pomodoro"
 	if p.installType == 1 {
-		placeholder = "例如：https://apps.example.com/pomodoro.zip"
+		placeholder = "例如：https://apps.example.com/pomodoro.tar"
 	}
 
 	components.Modal(c, components.ModalProps{
@@ -405,6 +407,31 @@ func (p *Page) installModal(c *ui.Context) {
 		}
 
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			// 本地包用系统文件选择器，避免让用户手输绝对路径。
+			if p.installType == 0 && p.hooks.SelectPackage != nil {
+				value := p.installValue
+				color := t.Text
+				if value == "" {
+					value = "未选择 .tar 应用包"
+					color = t.TextMuted
+				}
+				ui.Box(c).
+					Grow(1).
+					Height(34).
+					PaddingX(10).
+					Radius(theme.RadiusSM).
+					Background(t.SurfaceHover).
+					Children(func() {
+						ui.Row(c).Fill().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, value).FontSize(12).TextColor(color).MaxLines(1)
+						})
+					})
+				if components.Button(c, components.ButtonProps{Label: "选择文件"}).Clicked() {
+					p.pickPackage()
+				}
+				return
+			}
+
 			input := ui.TextInput(c, &p.installValue).Placeholder(placeholder)
 			if input.Changed() {
 				p.installErr = ""
@@ -415,8 +442,11 @@ func (p *Page) installModal(c *ui.Context) {
 			}
 		})
 
-		ui.Text(c, "先解析应用包，确认能力清单后再安装。").FontSize(12).TextColor(t.TextMuted)
-		ui.Text(c, "演示环境可尝试：pomodoro、reading 或 invalid").FontSize(11).TextColor(t.TextMuted)
+		hint := "先解析应用包，确认能力清单后再安装。"
+		if p.installType == 0 && p.hooks.SelectPackage != nil {
+			hint = "选择 .tar 应用包后会自动解析，确认能力清单后再安装。"
+		}
+		ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 
 		if p.installErr != "" {
 			ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
@@ -511,6 +541,25 @@ func (p *Page) parse() {
 	p.preview = &preview
 }
 
+// pickPackage 通过系统文件选择器拿到本地包路径，选中后直接解析。
+func (p *Page) pickPackage() {
+	if p.hooks.SelectPackage == nil {
+		return
+	}
+	value, err := p.hooks.SelectPackage()
+	if err != nil {
+		p.installErr = err.Error()
+		return
+	}
+	if value == "" {
+		return
+	}
+	p.installValue = value
+	p.installErr = ""
+	p.preview = nil
+	p.parse()
+}
+
 func (p *Page) install() {
 	if p.svc == nil || p.preview == nil {
 		return
@@ -536,15 +585,16 @@ func (p *Page) uninstall() {
 	if p.svc == nil {
 		return
 	}
+	// 先关闭应用窗口，释放页面占用的文件再删除安装目录。
+	if p.hooks.Close != nil {
+		p.hooks.Close(p.uninstallID)
+	}
 	if err := p.svc.Uninstall(p.uninstallID, p.keepData); err != nil {
 		return
 	}
 	if p.detailID == p.uninstallID {
 		p.detailOpen = false
 		p.detailID = ""
-	}
-	if p.hooks.Close != nil {
-		p.hooks.Close(p.uninstallID)
 	}
 	p.uninstallOpen = false
 	p.uninstallID = ""

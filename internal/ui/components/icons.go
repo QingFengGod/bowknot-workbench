@@ -34,6 +34,7 @@ const (
 	IconSun       IconName = "sun"
 	IconMoon      IconName = "moon"
 	IconMonitor   IconName = "monitor"
+	IconMemory    IconName = "memory"
 )
 
 // 图标统一为 lucide 风格 SVG（24 viewBox、stroke 2），保持与原生 UI 一致的线条观感。
@@ -66,6 +67,7 @@ var icons = map[IconName]*ui.SVG{
 	IconSun:       icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></g></svg>`),
 	IconMoon:      icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></g></svg>`),
 	IconMonitor:   icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></g></svg>`),
+	IconMemory:    icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M19 21l-7-5l-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></g></svg>`),
 }
 
 func icon(data string) *ui.SVG {

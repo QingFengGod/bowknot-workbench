@@ -23,8 +23,9 @@ type Hooks struct {
 // Page 是 agents 页的原生实现：左侧 Agent / 群聊列表，中间对话区，
 // 右侧为选中 Agent 的会话列表（群聊只有一个线程，不显示会话列）。
 type Page struct {
-	svc   contract.AgentService
-	hooks Hooks
+	svc    contract.AgentService
+	memory contract.MemoryService
+	hooks  Hooks
 
 	agents     []contract.AgentInfo
 	groups     []contract.AgentGroup
@@ -37,6 +38,13 @@ type Page struct {
 	sessions        []contract.AgentSession
 	activeSessionID string
 	messages        []contract.ChatMessage
+	// 消息分页：oldestSeq 是已加载消息的最小 seq，hasMore 表示还有更早的消息。
+	oldestSeq int64
+	hasMore   bool
+	// scrollShift 标记头部刚插入历史消息，下一帧需要按高度差补偿滚动位置。
+	scrollShift  bool
+	previousMaxY float32
+	previousY    float32
 
 	draft      string
 	sendErr    string
@@ -85,12 +93,29 @@ type Page struct {
 
 	deleteMessageOpen bool
 	deleteMessageID   string
+
+	// 危险工具审批状态，由流式审批事件驱动。
+	approvalOpen   bool
+	approvalRunID  string
+	approvalCallID string
+	approvalTool   string
+	approvalArgs   string
+
+	// 长期记忆面板及其编辑、清空状态。
+	memoryOpen      bool
+	memoryEditOpen  bool
+	memoryEditID    string
+	memoryEditValue string
+	memoryEditErr   string
+	memoryClearOpen bool
+	memoryState     components.MemoryPanelState
 }
 
 // New 创建 agents 页。
-func New(svc contract.AgentService, hooks Hooks) *Page {
+func New(svc contract.AgentService, memory contract.MemoryService, hooks Hooks) *Page {
 	p := &Page{
 		svc:     svc,
+		memory:  memory,
 		hooks:   hooks,
 		streams: map[string]string{},
 		panelGroupOpen: map[string]*bool{
@@ -116,6 +141,7 @@ func New(svc contract.AgentService, hooks Hooks) *Page {
 func (p *Page) View(c *ui.Context) {
 	t := c.Theme()
 
+	p.reconcileScrollShift()
 	p.followEnd()
 
 	// 动画通道挂在常驻根行上，会话列收起后彻底退出布局，
@@ -156,6 +182,25 @@ func (p *Page) View(c *ui.Context) {
 	p.deleteModal(c)
 	p.deleteSessionModal(c)
 	p.deleteMessageModal(c)
+	p.approvalModal(c)
+
+	memoryAgentID, memoryAgentName := "", ""
+	if agent := p.activeAgent(); agent != nil {
+		memoryAgentID, memoryAgentName = agent.ID, agent.Name
+	}
+	components.MemoryModal(c, components.MemoryModalProps{
+		Service:   p.memory,
+		Open:      &p.memoryOpen,
+		State:     &p.memoryState,
+		AgentID:   memoryAgentID,
+		AgentName: memoryAgentName,
+		EditOpen:  &p.memoryEditOpen,
+		EditID:    &p.memoryEditID,
+		EditValue: &p.memoryEditValue,
+		EditErr:   &p.memoryEditErr,
+		ClearOpen: &p.memoryClearOpen,
+		OnChanged: p.reloadMessages,
+	})
 }
 
 // emptyHint 是未选择任何条目时的占位，与助手页的空状态保持一致。
@@ -192,29 +237,48 @@ func (p *Page) chatHeader(c *ui.Context, progress float32) {
 				}
 			})
 
-			if p.activeAgent() != nil {
-				toggle := ui.ButtonBase(c).
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				memBtn := ui.ButtonBase(c).
 					Width(22).
 					Height(22).
 					Radius(4).
 					AlignItems(ui.Center).
 					Justify(ui.Center).
 					TextColor(t.TextMuted)
-				if toggle.Hovered() {
-					toggle.Background(t.SurfacePressed).TextColor(t.Text)
+				if memBtn.Hovered() {
+					memBtn.Background(t.SurfacePressed).TextColor(t.Text)
 				}
-				// 图标随展开进度平滑旋转，收起时转到 180°。
-				toggle.Children(func() {
-					components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - progress))
+				memBtn.Children(func() {
+					components.Icon(c, components.IconMemory, 14)
 				})
-				label := "收起会话列表"
-				if p.sessionsCollapsed {
-					label = "展开会话列表"
+				if memBtn.Tooltip("长期记忆").Clicked() {
+					p.memoryOpen = true
 				}
-				if toggle.Tooltip(label).Clicked() {
-					p.sessionsCollapsed = !p.sessionsCollapsed
+
+				if p.activeAgent() != nil {
+					toggle := ui.ButtonBase(c).
+						Width(22).
+						Height(22).
+						Radius(4).
+						AlignItems(ui.Center).
+						Justify(ui.Center).
+						TextColor(t.TextMuted)
+					if toggle.Hovered() {
+						toggle.Background(t.SurfacePressed).TextColor(t.Text)
+					}
+					// 图标随展开进度平滑旋转，收起时转到 180°。
+					toggle.Children(func() {
+						components.Icon(c, components.IconPanel, 13).Rotate(180 * (1 - progress))
+					})
+					label := "收起会话列表"
+					if p.sessionsCollapsed {
+						label = "展开会话列表"
+					}
+					if toggle.Tooltip(label).Clicked() {
+						p.sessionsCollapsed = !p.sessionsCollapsed
+					}
 				}
-			}
+			})
 		})
 }
 
@@ -311,6 +375,11 @@ func (p *Page) avatarText(id string) string {
 }
 
 func (p *Page) messageList(c *ui.Context) {
+	// 滚到接近顶部时补一页更早的消息。
+	if p.hasMore && !p.follow && p.chatScroll.MaxY > 0 && p.chatScroll.Y <= 32 {
+		p.loadEarlier()
+	}
+
 	ui.Column(c).Grow(1).Children(func() {
 		if len(p.messages) == 0 {
 			group := p.activeGroup()
@@ -378,6 +447,7 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 			p.deleteMessageID = m.ID
 			p.deleteMessageOpen = true
 		},
+		OnMemory: func() { p.memoryOpen = true },
 	})
 }
 
@@ -1098,6 +1168,14 @@ func (p *Page) consume(conversationID string, events <-chan contract.ChatEvent) 
 
 // applyEvent 用后端快照覆盖消息，避免重复拼接。
 func (p *Page) applyEvent(conversationID string, ev contract.ChatEvent) {
+	if ev.Type == contract.ChatEventApproval {
+		p.openApproval(ev)
+		return
+	}
+	if ev.Type == contract.ChatEventToolCall || ev.Type == contract.ChatEventToolResult {
+		return
+	}
+
 	if p.conversationID() == conversationID {
 		found := false
 		for i := range p.messages {
@@ -1121,7 +1199,50 @@ func (p *Page) applyEvent(conversationID string, ev contract.ChatEvent) {
 		delete(p.streams, conversationID)
 		p.reloadSessions()
 		p.reloadAgents()
+		// 重新读取消息，把刚落库的工具调用一并展示出来。
+		if p.conversationID() == conversationID {
+			p.reloadMessages()
+		}
 	}
+}
+
+// openApproval 弹出危险工具的确认框。
+func (p *Page) openApproval(ev contract.ChatEvent) {
+	p.approvalRunID = ev.RunID
+	p.approvalCallID = ev.ToolCallID
+	p.approvalTool = ev.ToolName
+	p.approvalArgs = ev.Arguments
+	p.approvalOpen = true
+}
+
+func (p *Page) approvalModal(c *ui.Context) {
+	if !p.approvalOpen {
+		return
+	}
+
+	args := strings.TrimSpace(p.approvalArgs)
+	if args == "" {
+		args = "无"
+	}
+	text := fmt.Sprintf("Agent 请求执行危险工具「%s」，参数：%s。是否允许本次执行？", p.approvalTool, args)
+	// 「拒绝」放在最后，回车默认不执行危险操作。
+	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "允许", "拒绝") {
+	case 0:
+		p.resolveApproval(true)
+	case 1:
+		p.resolveApproval(false)
+	}
+}
+
+func (p *Page) resolveApproval(approved bool) {
+	if svc, ok := p.svc.(contract.ApprovalService); ok {
+		svc.ResolveApproval(p.approvalRunID, p.approvalCallID, approved)
+	}
+	p.approvalOpen = false
+	p.approvalRunID = ""
+	p.approvalCallID = ""
+	p.approvalTool = ""
+	p.approvalArgs = ""
 }
 
 // ---------- 数据加载 ----------
@@ -1158,12 +1279,51 @@ func (p *Page) reloadSessions() {
 }
 
 func (p *Page) reloadMessages() {
+	p.messages = nil
+	p.oldestSeq = 0
+	p.hasMore = false
 	conv := p.conversationID()
 	if p.svc == nil || conv == "" {
-		p.messages = nil
 		return
 	}
-	p.messages = p.svc.Messages(conv)
+	page := p.svc.MessagesPage(conv, 0, contract.DefaultMessagePageSize)
+	p.messages = page.Items
+	p.hasMore = page.HasMore
+	if len(page.Items) > 0 {
+		p.oldestSeq = page.Items[0].Seq
+	}
+}
+
+// loadEarlier 加载一页更早的消息并插到列表头部。
+// 头部插入会抬高列表，记录当前滚动位置供下一帧补偿。
+func (p *Page) loadEarlier() {
+	conv := p.conversationID()
+	if p.svc == nil || conv == "" || !p.hasMore || p.oldestSeq <= 0 {
+		return
+	}
+	page := p.svc.MessagesPage(conv, p.oldestSeq, contract.DefaultMessagePageSize)
+	p.hasMore = page.HasMore
+	if len(page.Items) == 0 {
+		return
+	}
+
+	p.previousMaxY = p.chatScroll.MaxY
+	p.previousY = p.chatScroll.Y
+	p.scrollShift = true
+	p.follow = false
+	p.messages = append(page.Items, p.messages...)
+	p.oldestSeq = page.Items[0].Seq
+}
+
+// reconcileScrollShift 按列表增长的高度平移滚动位置，避免历史消息插入后视口跳动。
+func (p *Page) reconcileScrollShift() {
+	if !p.scrollShift {
+		return
+	}
+	if p.chatScroll.MaxY > p.previousMaxY {
+		p.chatScroll.Y = p.previousY + (p.chatScroll.MaxY - p.previousMaxY)
+	}
+	p.scrollShift = false
 }
 
 // conversationID 返回当前对话的消息存储键：单聊为会话 ID，群聊为 "group:" 前缀的 key。

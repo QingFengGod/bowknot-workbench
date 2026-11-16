@@ -53,8 +53,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := first.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
 	}
 	var tables int
 	if err := first.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation'`).Scan(&tables); err != nil {
@@ -77,8 +77,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("applied migrations = %d, want 1", count)
+	if count != 4 {
+		t.Fatalf("applied migrations = %d, want 4", count)
 	}
 }
 
@@ -360,7 +360,7 @@ func TestApps(t *testing.T) {
 
 	app := domain.App{
 		ID: "app1", Name: "app1", DisplayName: "应用一", Version: "1.0.0",
-		InstalledAt: 100, Tools: []domain.Tool{
+		InstallDir: `D:\apps\app1`, Entry: "index.html", InstalledAt: 100, Tools: []domain.Tool{
 			{Name: "a", Description: "A", Enabled: true},
 			{Name: "b", Description: "B", Dangerous: true, Enabled: true},
 		},
@@ -378,6 +378,9 @@ func TestApps(t *testing.T) {
 	}
 	if len(got.Tools) != 2 {
 		t.Fatalf("tools = %d, want 2", len(got.Tools))
+	}
+	if got.Entry != "index.html" || got.InstallDir != `D:\apps\app1` {
+		t.Fatalf("entry/installDir = %q/%q", got.Entry, got.InstallDir)
 	}
 
 	if err := s.Apps.SetToolEnabled(ctx, "app1", "b", false); err != nil {

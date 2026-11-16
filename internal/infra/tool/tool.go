@@ -12,12 +12,20 @@ import (
 
 // 工具来源类型。
 const (
-	SourceApp    = "app"
-	SourcePlugin = "plugin"
+	SourceApp     = "app"
+	SourcePlugin  = "plugin"
+	SourceBuiltin = "builtin"
 )
 
 // TransportInProcess 是首版执行通道；后续可扩展子进程或独立沙箱。
 const TransportInProcess = "in-process"
+
+// PersonaToolID 是更新助手人设的内置工具。名字避开冒号与斜杠，
+// 保证符合模型供应商对函数名的字符限制。
+const PersonaToolID = "builtin_update_persona"
+
+// MainAssistantAgentID 是内置助手使用的 Agent ID，与 app 层保持一致。
+const MainAssistantAgentID = "main-agent"
 
 // ToolSpec 是统一后的工具描述，ID 形如 app:<appID>/<name> 或 plugin:<pluginID>/<name>。
 type ToolSpec struct {
@@ -25,8 +33,33 @@ type ToolSpec struct {
 	Name        string
 	Description string
 	Dangerous   bool
-	Source      string // app / plugin
+	Source      string // app / plugin / builtin
 	SourceID    string
+	// Parameters 是可选的 JSON Schema 参数声明；为空时使用自由对象。
+	Parameters string
+}
+
+// PersonaToolSpec 声明内置的人设更新工具，参数只传需要修改的字段。
+func PersonaToolSpec() ToolSpec {
+	return ToolSpec{
+		ID:          PersonaToolID,
+		Name:        PersonaToolID,
+		Description: "当用户要求修改你的姓名、性别、年龄、性格、角色职能、对用户的称呼或其它要求时调用。参数是 JSON 对象，可包含 name、gender、age、personality、role、userName、custom 字段，只传需要修改的字段。",
+		Source:      SourceBuiltin,
+		SourceID:    "builtin",
+		Parameters: `{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "description": "助手姓名"},
+    "gender": {"type": "string", "description": "助手性别"},
+    "age": {"type": "string", "description": "助手年龄"},
+    "personality": {"type": "string", "description": "助手性格"},
+    "role": {"type": "string", "description": "角色或职能"},
+    "userName": {"type": "string", "description": "助手对用户的称呼"},
+    "custom": {"type": "string", "description": "其它要求"}
+  }
+}`,
+	}
 }
 
 // Call 是一次工具调用。

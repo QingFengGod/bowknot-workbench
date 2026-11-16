@@ -75,3 +75,29 @@ type Run struct {
 	StartedAt      int64
 	FinishedAt     int64
 }
+
+// ToolCallStatus 是一次工具调用的执行状态。
+type ToolCallStatus string
+
+const (
+	ToolCallRunning  ToolCallStatus = "running"
+	ToolCallOK       ToolCallStatus = "ok"
+	ToolCallFailed   ToolCallStatus = "failed"
+	ToolCallRejected ToolCallStatus = "rejected"
+)
+
+// ToolCall 是一次工具调用的持久化记录，与消息、Run 关联。
+type ToolCall struct {
+	ID             string
+	ConversationID string
+	MessageID      string
+	RunID          string
+	ToolID         string
+	AgentID        string
+	Arguments      string
+	Result         string
+	Status         ToolCallStatus
+	Error          string
+	CreatedAt      int64
+	FinishedAt     int64
+}

@@ -89,6 +89,10 @@ func (c *ConversationStore) Delete(ctx context.Context, id string) error {
 	if err := c.s.ensureOpen(); err != nil {
 		return err
 	}
+	// tool_call 没有外键，删除会话时手动清理，避免留下孤立记录。
+	if _, err := c.s.q.ExecContext(ctx, `DELETE FROM tool_call WHERE conversation_id = ?`, id); err != nil {
+		return wrapErr(err)
+	}
 
 	result, err := c.s.q.ExecContext(ctx, `DELETE FROM conversation WHERE id = ?`, id)
 	return ensureAffected(result, err)

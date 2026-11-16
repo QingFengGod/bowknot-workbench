@@ -11,21 +11,25 @@ import (
 	"bowknot-workbench/internal/contract"
 	"bowknot-workbench/internal/domain"
 	"bowknot-workbench/internal/infra/llm"
+	"bowknot-workbench/internal/infra/tool"
 	"bowknot-workbench/internal/platform/id"
 	"bowknot-workbench/internal/store"
 )
 
-const defaultAgentModelID = "bk-pro"
-
 // AgentService 是 agents 页的持久化实现，Agent、群聊与会话统一落在 store。
 type AgentService struct {
-	store    *store.Store
-	logger   *slog.Logger
-	runner   *streamRunner
-	provider llm.Provider
+	store     *store.Store
+	logger    *slog.Logger
+	runner    *streamRunner
+	provider  llm.Provider
+	tools     *tool.Service
+	approvals *ApprovalHub
+	memory    *MemoryService
+	// models 是启动时从网关缓存的可选模型，UI 只从这里取列表。
+	models []contract.ChatModel
 }
 
-func NewAgentService(st *store.Store, logger *slog.Logger, provider llm.Provider) *AgentService {
+func NewAgentService(st *store.Store, logger *slog.Logger, provider llm.Provider, tools *tool.Service, approvals *ApprovalHub) *AgentService {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -33,10 +37,29 @@ func NewAgentService(st *store.Store, logger *slog.Logger, provider llm.Provider
 		provider = llm.NewFake(llm.FakeOptions{})
 	}
 	return &AgentService{
-		store:    st,
-		logger:   logger,
-		runner:   newStreamRunner(),
-		provider: provider,
+		store:     st,
+		logger:    logger,
+		runner:    newStreamRunner(),
+		provider:  provider,
+		tools:     tools,
+		approvals: approvals,
+	}
+}
+
+// SetMemory 注入长期记忆服务；为 nil 时关闭记忆注入与抽取。
+func (s *AgentService) SetMemory(memory *MemoryService) {
+	s.memory = memory
+}
+
+// SetModels 注入启动时解析到的真实模型列表。
+func (s *AgentService) SetModels(models []contract.ChatModel) {
+	s.models = append([]contract.ChatModel(nil), models...)
+}
+
+// ResolveApproval 回传危险工具的用户确认结果。
+func (s *AgentService) ResolveApproval(runID, callID string, approved bool) {
+	if s.approvals != nil {
+		s.approvals.Resolve(runID, callID, approved)
 	}
 }
 
@@ -53,7 +76,7 @@ func (s *AgentService) Agents() []contract.AgentInfo {
 	}
 	out := make([]contract.AgentInfo, 0, len(items))
 	for _, item := range items {
-		out = append(out, toAgentInfo(item))
+		out = append(out, toAgentInfo(item, modelName(s.models, item.ModelID)))
 	}
 	return out
 }
@@ -91,11 +114,31 @@ func (s *AgentService) Messages(conversationID string) []contract.ChatMessage {
 		s.logger.Error("读取 Agent 消息失败", "conversation", conversationID, "error", err)
 		return nil
 	}
-	return toContractMessages(items, conversationID)
+	calls, err := s.store.ToolCalls.ListByConversation(context.Background(), storeID)
+	if err != nil {
+		s.logger.Error("读取 Agent 工具调用失败", "conversation", conversationID, "error", err)
+	}
+	return toContractMessages(items, conversationID, calls)
+}
+
+// MessagesPage 分页读取 Agent 消息，beforeSeq <= 0 表示从最新开始。
+func (s *AgentService) MessagesPage(conversationID string, beforeSeq int64, limit int) contract.MessagePage {
+	storeID, _, _ := resolveConversationID(conversationID)
+	ctx := context.Background()
+	items, hasMore, err := s.store.Messages.ListPage(ctx, storeID, beforeSeq, limit)
+	if err != nil {
+		s.logger.Error("读取 Agent 消息失败", "conversation", conversationID, "error", err)
+		return contract.MessagePage{}
+	}
+	calls, err := s.store.ToolCalls.ListByConversation(ctx, storeID)
+	if err != nil {
+		s.logger.Error("读取 Agent 工具调用失败", "conversation", conversationID, "error", err)
+	}
+	return contract.MessagePage{Items: toContractMessages(items, conversationID, calls), HasMore: hasMore}
 }
 
 func (s *AgentService) Models() []contract.ChatModel {
-	return chatModels()
+	return append([]contract.ChatModel(nil), s.models...)
 }
 
 func (s *AgentService) CreateAgent(name, description, persona string) contract.AgentInfo {
@@ -105,13 +148,17 @@ func (s *AgentService) CreateAgent(name, description, persona string) contract.A
 		description = "暂无描述"
 	}
 	now := time.Now().UnixMilli()
+	modelID := ""
+	if len(s.models) > 0 {
+		modelID = s.models[0].ID
+	}
 	item := domain.Agent{
 		ID:          "agent-" + id.New(),
 		Name:        name,
 		Description: description,
 		AvatarText:  firstRune(name),
 		Persona:     strings.TrimSpace(persona),
-		ModelID:     defaultAgentModelID,
+		ModelID:     modelID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -119,7 +166,7 @@ func (s *AgentService) CreateAgent(name, description, persona string) contract.A
 		s.logger.Error("创建 Agent 失败", "error", err)
 		return contract.AgentInfo{}
 	}
-	return toAgentInfo(item)
+	return toAgentInfo(item, modelName(s.models, item.ModelID))
 }
 
 func (s *AgentService) UpdateAgent(agentID, name, description, persona string) error {
@@ -430,7 +477,9 @@ func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan cont
 	}
 
 	req := llm.ChatRequest{System: groupSystemPrompt}
+	agentID := mainAgentID
 	if !isGroup {
+		agentID = conversation.OwnerID
 		item, err := s.store.Agents.Get(ctx, conversation.OwnerID)
 		if err != nil {
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
@@ -445,6 +494,11 @@ func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan cont
 		return "", nil, conversationError(err, conversationID)
 	}
 	req.Messages = toLLMMessages(history)
+	if s.memory != nil {
+		if block := s.memory.PromptBlock(agentID, text); block != "" {
+			req.System = strings.TrimSpace(req.System + "\n\n" + block)
+		}
+	}
 
 	events := make(chan contract.ChatEvent, eventBuffer)
 	go runGeneration(genStream{
@@ -461,11 +515,15 @@ func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan cont
 			SenderName:     senderName,
 			SenderAvatar:   senderAvatar,
 		},
-		runID:    runID,
-		provider: s.provider,
-		req:      req,
-		events:   events,
-		slot:     slot,
+		runID:     runID,
+		provider:  s.provider,
+		req:       req,
+		events:    events,
+		slot:      slot,
+		tools:     s.tools,
+		approvals: s.approvals,
+		agentID:   agentID,
+		memory:    s.memory,
 	})
 	return messageID, events, nil
 }
@@ -504,12 +562,14 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 
 	// 重新生成时排除目标消息本身，让模型基于此前的上下文重新作答。
 	req := llm.ChatRequest{System: groupSystemPrompt}
+	agentID := mainAgentID
 	if !isGroup {
 		conversation, err := s.store.Conversations.Get(ctx, storeID)
 		if err != nil {
 			s.runner.finish(conversationID, slot)
 			return nil, conversationError(err, conversationID)
 		}
+		agentID = conversation.OwnerID
 		item, err := s.store.Agents.Get(ctx, conversation.OwnerID)
 		if err != nil {
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
@@ -525,6 +585,11 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 		}
 	}
 	req.Messages = toLLMMessages(history)
+	if s.memory != nil {
+		if block := s.memory.PromptBlock(agentID, lastDomainUserText(history)); block != "" {
+			req.System = strings.TrimSpace(req.System + "\n\n" + block)
+		}
+	}
 
 	runID := id.New()
 	now := time.Now().UnixMilli()
@@ -560,6 +625,10 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 		req:       req,
 		events:    events,
 		slot:      slot,
+		tools:     s.tools,
+		approvals: s.approvals,
+		agentID:   agentID,
+		memory:    s.memory,
 	})
 	return events, nil
 }
@@ -586,7 +655,7 @@ func (s *AgentService) Stop(conversationID string) {
 // agentSystemPrompt 返回 Agent 的人设作为系统提示词，为空时使用默认文案。
 func agentSystemPrompt(item domain.Agent) string {
 	if strings.TrimSpace(item.Persona) != "" {
-		return item.Persona
+		return item.Persona + "\n\n" + globalRules
 	}
 	return defaultAgentSystemPrompt
 }

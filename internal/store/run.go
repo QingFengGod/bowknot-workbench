@@ -100,5 +100,12 @@ func (r *RunStore) markInterrupted(ctx context.Context) (int, error) {
 	); err != nil {
 		return int(count), wrapErr(err)
 	}
+	// 上次退出时仍在执行的工具调用同样收敛，避免重启后一直显示执行中。
+	if _, err := r.s.q.ExecContext(ctx,
+		`UPDATE tool_call SET status = ?, error = ?, finished_at = ? WHERE status = ?`,
+		string(domain.ToolCallFailed), "应用退出，执行中断", now, string(domain.ToolCallRunning),
+	); err != nil {
+		return int(count), wrapErr(err)
+	}
 	return int(count), nil
 }

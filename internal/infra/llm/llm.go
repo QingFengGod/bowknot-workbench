@@ -11,10 +11,22 @@ import (
 	"strings"
 )
 
-// Message 是发给模型的一条对话消息，Role 使用 OpenAI 约定的 user / assistant / system。
+// Message 是发给模型的一条对话消息，Role 使用 OpenAI 约定的
+// system / user / assistant / tool。工具调用轮次里，assistant 消息携带
+// ToolCalls，随后每条工具结果以 role=tool 与对应的 ToolCallID 回填。
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall
+	ToolCallID string
+}
+
+// ToolSchema 声明一个可供模型调用的工具。
+// Parameters 是可选 JSON Schema，为空时按自由对象传递。
+type ToolSchema struct {
+	Name        string
+	Description string
+	Parameters  string
 }
 
 // ChatRequest 描述一次对话生成请求。
@@ -22,6 +34,8 @@ type ChatRequest struct {
 	// Model 为空时由 Provider 回退到配置的 defaultModel。
 	Model  string
 	System string
+	// Tools 为本次请求可用的工具声明，为空表示不开放工具调用。
+	Tools []ToolSchema
 	// Messages 按时间顺序排列，最后一条通常是最新的用户消息。
 	Messages []Message
 }
@@ -33,8 +47,10 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// ToolCall 是模型请求的工具调用，本阶段仅作为预留字段，不做解析与执行。
+// ToolCall 是模型请求的工具调用。流式协议里同一次调用会分多片到达，
+// Index 用于把增量片段归并到同一个调用上。
 type ToolCall struct {
+	Index     int
 	ID        string
 	Name      string
 	Arguments string
@@ -64,6 +80,9 @@ type ModelInfo struct {
 // 一定有一个 Done=true 的 Chunk，随后关闭通道。
 type Provider interface {
 	Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, error)
+	// Complete 执行一次非流式生成并返回完整文本，用于记忆抽取与摘要等
+	// 结构化调用；返回 error 时不产生任何可用结果，可安全重试。
+	Complete(ctx context.Context, req ChatRequest) (string, error)
 	Models(ctx context.Context) ([]ModelInfo, error)
 }
 

@@ -197,6 +197,32 @@ func TestPluginAuthorization(t *testing.T) {
 	}
 }
 
+func TestAvailableFiltersUnauthorized(t *testing.T) {
+	svc := newTestService(t, testStore(t), nil)
+
+	ids := map[string]bool{}
+	for _, spec := range svc.Available(context.Background(), "main-agent") {
+		ids[spec.ID] = true
+	}
+	if !ids["app:app-a/t1"] || !ids["app:app-a/t2"] {
+		t.Fatalf("可用应用工具缺失：%+v", ids)
+	}
+	if ids["app:app-a/t3"] {
+		t.Fatal("停用工具不应出现在可用列表")
+	}
+	if ids["plugin:plugin-p/p1"] {
+		t.Fatal("未授权插件工具不应出现在主 Agent 的可用列表")
+	}
+
+	authorized := map[string]bool{}
+	for _, spec := range svc.Available(context.Background(), "agent-1") {
+		authorized[spec.ID] = true
+	}
+	if !authorized["plugin:plugin-p/p1"] {
+		t.Fatalf("已授权 Agent 缺少插件工具：%+v", authorized)
+	}
+}
+
 func TestDangerousToolRequiresApproval(t *testing.T) {
 	st := testStore(t)
 	executor := &stubExecutor{fn: func(ctx context.Context, call Call) (Result, error) {

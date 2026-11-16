@@ -121,6 +121,50 @@ func (s *stubProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Chun
 
 func (s *stubProvider) Models(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
 
+func (s *stubProvider) Complete(ctx context.Context, req ChatRequest) (string, error) {
+	s.mu.Lock()
+	index := s.calls
+	s.calls++
+	s.mu.Unlock()
+	if len(s.errs) > 0 && (index < len(s.errs) || s.repeatLast) {
+		if index >= len(s.errs) {
+			index = len(s.errs) - 1
+		}
+		return "", s.errs[index]
+	}
+	return "完整结果", nil
+}
+
+func TestFakeCompleteReturnsEmptyJSON(t *testing.T) {
+	fake := NewFake(FakeOptions{})
+	text, err := fake.Complete(context.Background(), ChatRequest{})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if text != "[]" {
+		t.Fatalf("默认完整结果 = %q, want []", text)
+	}
+	if fake.Completes() != 1 {
+		t.Fatalf("Complete 调用次数 = %d, want 1", fake.Completes())
+	}
+}
+
+func TestWithRetryCompleteRetriesTransientError(t *testing.T) {
+	stub := &stubProvider{errs: []error{&Error{Kind: KindRateLimit, Message: "限流"}}}
+	provider := WithRetry(stub, RetryOptions{Base: time.Millisecond})
+
+	text, err := provider.Complete(context.Background(), ChatRequest{})
+	if err != nil {
+		t.Fatalf("重试后仍失败：%v", err)
+	}
+	if text != "完整结果" {
+		t.Fatalf("结果 = %q", text)
+	}
+	if got := stub.calls; got != 2 {
+		t.Fatalf("调用次数 = %d, want 2", got)
+	}
+}
+
 func TestWithRetryRetriesBeforeFirstToken(t *testing.T) {
 	stub := &stubProvider{errs: []error{
 		&Error{Kind: KindServer, Message: "第一次失败"},

@@ -22,6 +22,7 @@ type Deps struct {
 	Apps      contract.AppCatalog
 	Assistant contract.AssistantService
 	Agents    contract.AgentService
+	Memory    contract.MemoryService
 }
 
 type navItem struct {
@@ -44,6 +45,8 @@ var navItems = []navItem{
 type Shell struct {
 	deps Deps
 	win  *mygo.Window
+	// launcher 管理应用窗口与 bowknot-app 协议。
+	launcher *appLauncher
 
 	active  string
 	native  map[string]pages.Page
@@ -57,14 +60,19 @@ type Shell struct {
 // New 组装原生壳。所有一级页面均为原生实现，未实现的显示占位。
 func New(deps Deps) *Shell {
 	s := &Shell{
-		deps:   deps,
-		active: "/apps",
-		mode:   theme.ModeSystem,
+		deps:     deps,
+		active:   "/apps",
+		mode:     theme.ModeSystem,
+		launcher: newAppLauncher(),
 	}
 	s.native = map[string]pages.Page{
-		"/apps":          apps.New(deps.Apps, apps.Hooks{}),
-		"/assistant":     assistant.New(deps.Assistant, assistant.Hooks{Update: s.update}),
-		"/agents":        agents.New(deps.Agents, agents.Hooks{Update: s.update}),
+		"/apps": apps.New(deps.Apps, apps.Hooks{
+			Open:          s.launcher.Open,
+			Close:         s.launcher.Close,
+			SelectPackage: selectAppPackage,
+		}),
+		"/assistant":     assistant.New(deps.Assistant, deps.Memory, assistant.Hooks{Update: s.update}),
+		"/agents":        agents.New(deps.Agents, deps.Memory, agents.Hooks{Update: s.update}),
 		"/aigc/generate": aigc.New(),
 		"/plugins":       plugins.New(deps.Plugins),
 	}
@@ -72,7 +80,28 @@ func New(deps Deps) *Shell {
 	return s
 }
 
+// selectAppPackage 用系统文件选择器挑选 tar 应用包，取消时返回空路径。
+func selectAppPackage() (string, error) {
+	files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Title: "选择应用包",
+		Filters: []mygo.FileFilter{
+			{Name: "应用包 (*.tar)", Extensions: []string{"tar"}},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+	return files[0], nil
+}
+
 func (s *Shell) Start() {
+	// 自定义协议必须先于使用它的窗口注册。
+	if err := s.launcher.register(); err != nil {
+		mygo.Dialog.Error("应用协议注册失败", err.Error())
+	}
 	s.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:     "Bowknot Workbench",
 		Width:     1360,
@@ -132,9 +161,9 @@ func (s *Shell) titleBar(c *ui.Context) {
 		active := c.WindowActive()
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			s.themeButton(c)
-			s.trafficLight(c, active, trafficMinimize, func() { s.win.Minimize() })
-			s.trafficLight(c, active, trafficMaximize, func() { s.win.ToggleMaximize() })
-			s.trafficLight(c, active, trafficClose, func() { s.win.Close() })
+			trafficLight(c, active, trafficMinimize, func() { s.win.Minimize() })
+			trafficLight(c, active, trafficMaximize, func() { s.win.ToggleMaximize() })
+			trafficLight(c, active, trafficClose, func() { s.win.Close() })
 		})
 	})
 }
@@ -204,7 +233,7 @@ func (s *Shell) themeButton(c *ui.Context) {
 
 // trafficLight 是 macOS 交通灯颜色的圆点按钮，无图标；
 // 窗口未激活时整组变灰，贴近系统原生表现。
-func (s *Shell) trafficLight(c *ui.Context, active bool, color ui.Color, action func()) {
+func trafficLight(c *ui.Context, active bool, color ui.Color, action func()) {
 	const inactiveGray = uint8(0xb6)
 
 	dot := ui.ButtonBase(c).

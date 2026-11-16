@@ -6,7 +6,7 @@ import (
 	"bowknot-workbench/internal/domain"
 )
 
-const appColumns = `id, name, display_name, version, description, icon_text, source_type, source_value, install_dir, installed_at, last_used_at, data_size`
+const appColumns = `id, name, display_name, version, description, icon_text, source_type, source_value, install_dir, entry, installed_at, last_used_at, data_size`
 
 type AppStore struct {
 	s *Store
@@ -85,9 +85,9 @@ func (a *AppStore) insert(ctx context.Context, item domain.App) error {
 	}
 
 	_, err := a.s.q.ExecContext(ctx,
-		`INSERT INTO app(`+appColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO app(`+appColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Name, item.DisplayName, item.Version, item.Description,
-		item.IconText, item.SourceType, item.SourceValue, item.InstallDir,
+		item.IconText, item.SourceType, item.SourceValue, item.InstallDir, item.Entry,
 		item.InstalledAt, item.LastUsedAt, item.DataSize,
 	)
 	if err != nil {
@@ -112,7 +112,7 @@ func (a *AppStore) upsert(ctx context.Context, item domain.App) error {
 	}
 
 	_, err := a.s.q.ExecContext(ctx,
-		`INSERT INTO app(`+appColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO app(`+appColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			display_name = excluded.display_name,
@@ -122,9 +122,10 @@ func (a *AppStore) upsert(ctx context.Context, item domain.App) error {
 			source_type = excluded.source_type,
 			source_value = excluded.source_value,
 			install_dir = excluded.install_dir,
+			entry = excluded.entry,
 			installed_at = excluded.installed_at`,
 		item.ID, item.Name, item.DisplayName, item.Version, item.Description,
-		item.IconText, item.SourceType, item.SourceValue, item.InstallDir,
+		item.IconText, item.SourceType, item.SourceValue, item.InstallDir, item.Entry,
 		item.InstalledAt, item.LastUsedAt, item.DataSize,
 	)
 	return wrapErr(err)
@@ -241,7 +242,7 @@ func scanApp(row rowScanner) (domain.App, error) {
 	err := row.Scan(
 		&item.ID, &item.Name, &item.DisplayName, &item.Version, &item.Description,
 		&item.IconText, &item.SourceType, &item.SourceValue, &item.InstallDir,
-		&item.InstalledAt, &item.LastUsedAt, &item.DataSize,
+		&item.Entry, &item.InstalledAt, &item.LastUsedAt, &item.DataSize,
 	)
 	return item, err
 }

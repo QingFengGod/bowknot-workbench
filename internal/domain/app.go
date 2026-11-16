@@ -19,6 +19,8 @@ type App struct {
 	SourceType  string
 	SourceValue string
 	InstallDir  string
+	// Entry 是入口文件相对安装目录的路径，为空表示应用不可启动。
+	Entry       string
 	InstalledAt int64
 	LastUsedAt  int64
 	DataSize    int64

@@ -21,7 +21,7 @@ var embedded embed.FS
 // markerKey 与 markerValue 标记内置包已安装，后续启动不重复导入。
 const (
 	markerKey   = "builtin.seed_version"
-	markerValue = "builtin.v1"
+	markerValue = "builtin.v2"
 )
 
 // Files 返回内置包文件系统，根目录含 apps/ 与 plugins/。

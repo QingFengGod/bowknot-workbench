@@ -83,6 +83,77 @@ func TestOpenAIStreamParsesSSE(t *testing.T) {
 	}
 }
 
+func TestOpenAISerializesToolsAndToolMessages(t *testing.T) {
+	var payload string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload = readAllBody(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey, DefaultModel: "dft-model"})
+	chunks, err := provider.Stream(context.Background(), ChatRequest{
+		Messages: []Message{
+			{Role: "user", Content: "查一下"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "app:demo/runTask", Arguments: `{"x":1}`}}},
+			{Role: "tool", ToolCallID: "call-1", Content: "done"},
+		},
+		Tools: []ToolSchema{{Name: "app:demo/runTask", Description: "执行任务"}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	collectChunks(t, chunks)
+
+	for _, want := range []string{
+		`"tools":[`,
+		`"type":"function"`,
+		`"name":"app:demo/runTask"`,
+		`"parameters":{"type":"object","properties":{}}`,
+		`"tool_calls":[`,
+		`"tool_call_id":"call-1"`,
+		`"role":"tool"`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("请求体缺少 %s：%s", want, payload)
+		}
+	}
+}
+
+func TestOpenAIStreamParsesToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"app:demo/runTask\",\"arguments\":\"{\\\"x\\\":\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey, DefaultModel: "dft-model"})
+	chunks, err := provider.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	var calls []ToolCall
+	for _, chunk := range collectChunks(t, chunks) {
+		if chunk.Err != nil {
+			t.Fatalf("意外错误：%v", chunk.Err)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("工具调用片段 = %d, want 2", len(calls))
+	}
+	if calls[0].Index != 0 || calls[0].ID != "call-1" || calls[0].Name != "app:demo/runTask" {
+		t.Fatalf("首个片段异常：%+v", calls[0])
+	}
+	if calls[1].Index != 0 || calls[1].Arguments != "1}" {
+		t.Fatalf("增量片段异常：%+v", calls[1])
+	}
+}
+
 func TestOpenAISetsAuthorizationHeader(t *testing.T) {
 	var captured http.Request
 	server := sseServer(t, http.StatusOK, "data: [DONE]\n\n", &captured)
@@ -226,6 +297,55 @@ func TestOpenAIStreamHeaderTimeout(t *testing.T) {
 	var e *Error
 	if !errors.As(err, &e) || e.Kind != KindTimeout {
 		t.Fatalf("错误 = %v, want timeout", err)
+	}
+}
+
+func TestOpenAICompleteReturnsContent(t *testing.T) {
+	var payload string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload = readAllBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"[{\"content\":\"偏好中文\"}]"}}]}`)
+	}))
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey, DefaultModel: "dft-model"})
+	text, err := provider.Complete(context.Background(), ChatRequest{
+		System:   "只输出 JSON",
+		Messages: []Message{{Role: "user", Content: "抽取记忆"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if text != `[{"content":"偏好中文"}]` {
+		t.Fatalf("完整结果 = %q", text)
+	}
+	if !strings.Contains(payload, `"stream":false`) {
+		t.Fatalf("非流式请求应设置 stream=false：%s", payload)
+	}
+	if !strings.Contains(payload, `"model":"dft-model"`) {
+		t.Fatalf("未使用默认模型：%s", payload)
+	}
+	if strings.Contains(payload, testAPIKey) {
+		t.Fatal("请求体不应包含密钥")
+	}
+}
+
+func TestOpenAICompleteClassifiesHTTPError(t *testing.T) {
+	server := sseServer(t, http.StatusUnauthorized, `{"error":{"message":"invalid api key"}}`, nil)
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey})
+	_, err := provider.Complete(context.Background(), ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatal("预期返回错误")
+	}
+	var e *Error
+	if !errors.As(err, &e) || e.Kind != KindAuth {
+		t.Fatalf("错误 = %v, want auth", err)
+	}
+	if strings.Contains(err.Error(), testAPIKey) {
+		t.Fatal("错误信息不应包含密钥")
 	}
 }
 

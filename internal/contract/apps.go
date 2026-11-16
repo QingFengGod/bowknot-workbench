@@ -20,6 +20,10 @@ type AppItem struct {
 	IconText    string `json:"iconText"`
 	SourceType  string `json:"sourceType"`
 	Source      string `json:"source"`
+	// Entry 是入口文件相对安装目录的路径，为空表示应用不可启动。
+	Entry string `json:"entry"`
+	// InstallDir 是应用安装目录，供壳层定位入口文件；UI 不直接使用。
+	InstallDir  string `json:"installDir"`
 	InstalledAt int64  `json:"installedAt"`
 	// LastUsedAt 为 0 表示从未使用。
 	LastUsedAt int64     `json:"lastUsedAt"`

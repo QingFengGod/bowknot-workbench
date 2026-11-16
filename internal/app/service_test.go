@@ -44,15 +44,15 @@ func slowFake() *llm.Fake {
 }
 
 func newFastAssistant(st *store.Store) *AssistantService {
-	return NewAssistantService(st, testLogger(), fastFake())
+	return NewAssistantService(st, testLogger(), fastFake(), nil, nil)
 }
 
 func newSlowAssistant(st *store.Store) *AssistantService {
-	return NewAssistantService(st, testLogger(), slowFake())
+	return NewAssistantService(st, testLogger(), slowFake(), nil, nil)
 }
 
 func newFastAgent(st *store.Store) *AgentService {
-	return NewAgentService(st, testLogger(), fastFake())
+	return NewAgentService(st, testLogger(), fastFake(), nil, nil)
 }
 
 func drainEvents(t *testing.T, events <-chan contract.ChatEvent) []contract.ChatEvent {

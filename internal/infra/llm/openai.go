@@ -21,6 +21,8 @@ const (
 	errBodyLimit = 4 * 1024
 	// errMessageLimit 限制进入错误信息的上游文本长度。
 	errMessageLimit = 500
+	// completeBodyLimit 限制非流式响应的读取长度，避免异常上游撑爆内存。
+	completeBodyLimit = 2 << 20
 )
 
 // OpenAI 是 OpenAI 兼容 /chat/completions 流式协议的实现。
@@ -81,19 +83,115 @@ func (p *OpenAI) Stream(ctx context.Context, req ChatRequest) (<-chan Chunk, err
 	return out, nil
 }
 
-// start 发起请求并同步读取首个 SSE data 载荷，保证「返回 error 时必然尚未产生任何输出」。
-// 返回的 reader 与读取首个载荷使用同一个缓冲，避免缓冲数据丢失。
-func (p *OpenAI) start(ctx context.Context, req ChatRequest, model string) (io.ReadCloser, *bufio.Reader, string, error) {
-	payload := chatPayload{Model: model, Stream: true}
+// Complete 走同一下游 /chat/completions 接口，但要求一次性返回完整文本。
+func (p *OpenAI) Complete(ctx context.Context, req ChatRequest) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", classifyTransport(err)
+	}
+	model := req.Model
+	if model == "" {
+		model = p.defaultModel
+	}
+	if model == "" {
+		return "", &Error{Kind: KindServer, Message: "未配置模型 ID"}
+	}
+
+	data, err := json.Marshal(buildPayload(req, model, false))
+	if err != nil {
+		return "", &Error{Kind: KindServer, Message: "构造请求失败"}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return "", &Error{Kind: KindServer, Message: "构造请求失败"}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return "", classifyTransport(err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, completeBodyLimit))
+	if err != nil {
+		return "", classifyTransport(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", classifyStatus(resp.StatusCode, extractErrorMessage(string(raw)))
+	}
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", &Error{Kind: KindServer, Message: "响应数据解析失败"}
+	}
+	if decoded.Error != nil && decoded.Error.Message != "" {
+		return "", &Error{Kind: KindServer, Message: decoded.Error.Message}
+	}
+	if len(decoded.Choices) == 0 {
+		return "", &Error{Kind: KindServer, Message: "模型没有返回内容"}
+	}
+	return decoded.Choices[0].Message.Content, nil
+}
+
+// buildPayload 把请求转换为 OpenAI 兼容载荷，Stream 与 Complete 共用。
+func buildPayload(req ChatRequest, model string, stream bool) chatPayload {
+	payload := chatPayload{Model: model, Stream: stream}
 	if req.System != "" {
 		payload.Messages = append(payload.Messages, payloadMessage{Role: "system", Content: req.System})
 	}
 	for _, item := range req.Messages {
-		if item.Content == "" {
+		// 只有完全空白的占位消息才跳过；带工具调用或工具回填的消息必须保留。
+		if item.Content == "" && len(item.ToolCalls) == 0 && item.ToolCallID == "" {
 			continue
 		}
-		payload.Messages = append(payload.Messages, payloadMessage{Role: item.Role, Content: item.Content})
+		message := payloadMessage{
+			Role:       item.Role,
+			Content:    item.Content,
+			ToolCallID: item.ToolCallID,
+		}
+		for _, call := range item.ToolCalls {
+			toolCall := payloadToolCall{ID: call.ID, Type: "function"}
+			toolCall.Function.Name = call.Name
+			toolCall.Function.Arguments = call.Arguments
+			message.ToolCalls = append(message.ToolCalls, toolCall)
+		}
+		payload.Messages = append(payload.Messages, message)
 	}
+	for _, schema := range req.Tools {
+		parameters := json.RawMessage(defaultToolParameters)
+		if schema.Parameters != "" {
+			parameters = json.RawMessage(schema.Parameters)
+		}
+		payload.Tools = append(payload.Tools, payloadTool{
+			Type: "function",
+			Function: payloadToolFunction{
+				Name:        schema.Name,
+				Description: schema.Description,
+				Parameters:  parameters,
+			},
+		})
+	}
+	return payload
+}
+
+// start 发起请求并同步读取首个 SSE data 载荷，保证「返回 error 时必然尚未产生任何输出」。
+// 返回的 reader 与读取首个载荷使用同一个缓冲，避免缓冲数据丢失。
+func (p *OpenAI) start(ctx context.Context, req ChatRequest, model string) (io.ReadCloser, *bufio.Reader, string, error) {
+	payload := buildPayload(req, model, true)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, nil, "", &Error{Kind: KindServer, Message: "构造请求失败"}
@@ -241,15 +339,41 @@ func (p *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 	return out, nil
 }
 
+// defaultToolParameters 是 manifest 没有声明参数结构时使用的自由对象。
+const defaultToolParameters = `{"type":"object","properties":{}}`
+
 type chatPayload struct {
 	Model    string           `json:"model"`
 	Messages []payloadMessage `json:"messages"`
 	Stream   bool             `json:"stream"`
+	Tools    []payloadTool    `json:"tools,omitempty"`
 }
 
 type payloadMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string            `json:"role"`
+	Content    string            `json:"content,omitempty"`
+	ToolCalls  []payloadToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+type payloadTool struct {
+	Type     string              `json:"type"`
+	Function payloadToolFunction `json:"function"`
+}
+
+type payloadToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type payloadToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // sseData 是 /chat/completions 流式响应里单个 data 载荷。
@@ -258,6 +382,7 @@ type sseData struct {
 		Delta struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
+				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -286,6 +411,7 @@ func parseSSEData(data string) (*sseData, error) {
 		raw.delta = raw.Choices[0].Delta.Content
 		for _, call := range raw.Choices[0].Delta.ToolCalls {
 			raw.toolCalls = append(raw.toolCalls, ToolCall{
+				Index:     call.Index,
 				ID:        call.ID,
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
