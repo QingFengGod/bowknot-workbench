@@ -7,7 +7,7 @@
 bowknot-workbench 是一个本地优先的 AI 助理与多 Agent 协作工作台，为 **mygo 原生 Go 桌面端**。
 
 - 原生 UI 优先：立即模式 UI，无 WebView，页面状态存放在页面结构体字段中
-- 后端与 UI 分离：UI 只调用 `internal/contract` 接口，不感知数据来源；mock 实现位于 `internal/backend`，后续替换为 SQLite / 真实服务
+- 后端与 UI 分离：UI 只调用 `internal/contract` 接口，不感知数据来源；持久化统一走 `internal/store`（SQLite），`internal/backend` 保留为行为对照
 - 品牌：主题色 `#fb5215`，主题 token 见 `internal/ui/theme`
 
 ## 2. 必须遵守的协作规则
@@ -31,19 +31,38 @@ bowknot-workbench 是一个本地优先的 AI 助理与多 Agent 协作工作台
 ## 3. 目录约定
 
 ```text
-cmd/desktop/main.go          启动入口，组装后端服务注入壳层
+cmd/desktop/main.go          启动入口：自检、装配 store/网关/安装器并注入壳层
 internal/contract/           接口与 DTO，一个模块一个文件（app / assistant / agent…）
-internal/backend/            内存 mock 实现，模拟流式回复与演示数据
+internal/backend/            内存 mock 实现，保留为行为对照（助手/Agent 已切 store）
+internal/domain/             领域模型，store 与 app 层共用
+internal/store/              SQLite 持久化：单门面 + 8 子 store + Tx 克隆 + 迁移 + 种子
+internal/infra/
+├── config/                  config.json 加载校验，MaskKey 脱敏
+├── llm/                     模型网关：OpenAI 兼容 SSE + Fake，重试/取消/错误分类
+├── package/                 包管理（包名 pkgs）：manifest、安全解包、下载、安装卸载
+└── tool/                    工具注册表与执行外壳：授权校验、审批、审计
+internal/builtin/            embed 的内置应用/插件 tar，首次启动安装
+internal/platform/           paths / lifecycle / id / logging（日志 10MB 轮转保留 5 份）
 internal/ui/
 ├── shell/                   窗口外壳：自绘标题栏、一级导航、页面注册与切换
 ├── pages/                   原生页面，一页一个目录（apps / assistant / agents / plugins / aigc）
 ├── components/              公共组件与图标（Button、Card、Avatar、Drawer、Icon 等）
 ├── theme/                   品牌主题与明暗色 token
 └── format/                  时间、相对时间、文件大小格式化
+docs/                        infrastructure-plan.md（含实施状态）、operations.md（备份与恢复）
 ```
 
 - 新页面实现后注册进 `shell.New` 的 `native` 表，路由与一级导航对齐
 - 页面间不互相 import；共享逻辑下沉到 `components` 或 `contract`
+
+## 3.1 基础设施层约定
+
+- `database/sql` 只允许出现在 `internal/store` 内；结构化数据访问一律经 `store.Store`，升级 schema 只新增迁移文件，不改历史迁移
+- 事务内禁止网络请求、解包、模型调用等外部 I/O；跨聚合写入走 `store.Tx`
+- `llm.Provider` 是模型调用的唯一入口，密钥不出现在日志、错误与 contract 返回值中；`Chunk.Err` 为流中错误，`Stream` 返回的 error 表示尚未产生输出、可安全重试
+- 工具调用必须经 `tool.Service.Execute`，不允许绕过授权校验与危险审批直调执行器；`Approver` 为 nil 时危险工具一律拒绝
+- 包安装/卸载必须经 `pkgs.Installer`（原子移动 + 同事务写记录）；手动操作 `apps/`、`plugins/` 目录会造成记录与文件不一致
+- `infra/*` 包不依赖 `internal/ui` 与 `internal/backend`；依赖方向：`cmd → app → infra/store`
 
 ## 4. 编码规范
 
