@@ -32,6 +32,8 @@ type AssistantService struct {
 	models []contract.ChatModel
 	// greeted 保证每次应用启动只主动问候一次。
 	greeted atomic.Bool
+	// revision 在后台追加消息时递增，UI 据此刷新当前会话。
+	revision atomic.Uint64
 }
 
 func NewAssistantService(st *store.Store, logger *slog.Logger, provider llm.Provider, tools *tool.Service, approvals *ApprovalHub) *AssistantService {
@@ -370,6 +372,47 @@ func (s *AssistantService) systemPrompt() string {
 		return assistantSystemPrompt + "\n\n" + block
 	}
 	return assistantSystemPrompt
+}
+
+// Revision 返回后台消息版本的当前值，UI 用它判断是否需要重新加载。
+func (s *AssistantService) Revision() uint64 {
+	return s.revision.Load()
+}
+
+// AppendReport 追加一条已完成的助手消息，用于子 Agent 完成后的异步汇报。
+// 只允许写入主助手或群聊会话，不写子 Agent 的会话。
+func (s *AssistantService) AppendReport(conversationID, content string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	content = strings.TrimSpace(content)
+	if conversationID == "" || content == "" {
+		return nil
+	}
+
+	ctx := context.Background()
+	conversation, err := s.store.Conversations.Get(ctx, conversationID)
+	if err != nil {
+		return conversationError(err, conversationID)
+	}
+	if conversation.Kind == domain.KindAgent {
+		return nil
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := s.store.Messages.Append(ctx, domain.Message{
+		ID:             id.New(),
+		ConversationID: conversationID,
+		Role:           domain.RoleAssistant,
+		Content:        content,
+		Status:         domain.MessageDone,
+		CreatedAt:      now,
+	}); err != nil {
+		return err
+	}
+	if err := s.store.Conversations.UpdateMeta(ctx, conversationID, conversation.Title, snippet(content, 40), conversation.Pinned, now); err != nil {
+		return err
+	}
+	s.revision.Add(1)
+	return nil
 }
 
 func (s *AssistantService) CreateSession() contract.ChatSession {

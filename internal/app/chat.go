@@ -29,7 +29,12 @@ const (
 	// globalRules 是所有助手与 Agent 共用的行为底线。
 	globalRules = "在不违法、不伤害他人的前提下，尽可能满足用户的要求。"
 	// assistantSystemPrompt 是内置助手的全局规则与人设使用说明。
-	assistantSystemPrompt    = "你是 bowknot-workbench 的内置助手，用简洁的中文回答用户的问题。" + globalRules + "用户要求修改你的姓名、性别、年龄、性格、角色职能、对用户的称呼或其它要求时，调用 builtin_update_persona 工具，只传需要修改的字段。"
+	// 明确身份完全由用户设定，避免模型把默认姓名当成不可更改的产品身份而拒绝改名。
+	assistantSystemPrompt = "你是一个由用户完全自定义的私人助手，当前运行在 bowknot-workbench 中，用简洁的中文回答用户的问题。" +
+		globalRules +
+		"你的姓名、性别、年龄、性格、角色或职责、对用户的称呼、其它要求都完全由用户设定，不存在任何不可更改的公司、产品或预设身份。" +
+		"用户要求修改这些信息（包括改名、换称呼、设定角色）时，这是完全允许的，必须立即调用 builtin_update_persona 工具，只传需要修改的字段，不要说不能修改，也不要用预设身份作为拒绝理由。" +
+		"修改成功后，按新的姓名与称呼回应用户。"
 	defaultAgentSystemPrompt = "你是 bowknot-workbench 里的一个 Agent，请用简洁的中文回复用户。" + globalRules
 	groupSystemPrompt        = "这是多 Agent 群聊，请以「助理」的身份协调群内成员推进任务，用简洁的中文回复。" + globalRules
 )
@@ -415,7 +420,7 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 		status = domain.ToolCallFailed
 		errText = "工具服务未启用"
 		resultText = "工具执行失败：" + errText
-	} else if result, err := target.tools.Execute(execCtx, toolID, target.agentID, arguments); err != nil {
+	} else if result, err := target.tools.Execute(execCtx, toolID, target.agentID, target.message.ConversationID, arguments); err != nil {
 		status = domain.ToolCallFailed
 		errText = err.Error()
 		if tool.IsCanceled(err) {

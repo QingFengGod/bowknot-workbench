@@ -147,6 +147,11 @@ func (s *AgentService) CreateAgent(name, description, persona string) contract.A
 	if description == "" {
 		description = "暂无描述"
 	}
+	persona = strings.TrimSpace(persona)
+	if persona == "" {
+		// 创建时就把默认人设落库，让 Agent 有独立的人设起点，而不是共用通用提示词。
+		persona = personaText(defaultAgentProfile(name, description))
+	}
 	now := time.Now().UnixMilli()
 	modelID := ""
 	if len(s.models) > 0 {
@@ -157,7 +162,7 @@ func (s *AgentService) CreateAgent(name, description, persona string) contract.A
 		Name:        name,
 		Description: description,
 		AvatarText:  firstRune(name),
-		Persona:     strings.TrimSpace(persona),
+		Persona:     persona,
 		ModelID:     modelID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -183,7 +188,11 @@ func (s *AgentService) UpdateAgent(agentID, name, description, persona string) e
 	item.Name = name
 	item.Description = strings.TrimSpace(description)
 	item.AvatarText = firstRune(name)
-	item.Persona = strings.TrimSpace(persona)
+	persona = strings.TrimSpace(persona)
+	if persona == "" {
+		persona = personaText(defaultAgentProfile(name, item.Description))
+	}
+	item.Persona = persona
 	item.UpdatedAt = time.Now().UnixMilli()
 	if err := s.store.Agents.Upsert(ctx, item); err != nil {
 		return agentError(err, agentID)
@@ -485,7 +494,7 @@ func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan cont
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
 			req = llm.ChatRequest{System: defaultAgentSystemPrompt}
 		} else {
-			req = llm.ChatRequest{System: agentSystemPrompt(item), Model: item.ModelID}
+			req = llm.ChatRequest{System: s.agentSystemPrompt(item), Model: item.ModelID}
 		}
 	}
 	history, err := s.store.Messages.List(ctx, storeID)
@@ -575,7 +584,7 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
 			req = llm.ChatRequest{System: defaultAgentSystemPrompt}
 		} else {
-			req = llm.ChatRequest{System: agentSystemPrompt(item), Model: item.ModelID}
+			req = llm.ChatRequest{System: s.agentSystemPrompt(item), Model: item.ModelID}
 		}
 	}
 	history := make([]domain.Message, 0, len(messages))
@@ -652,12 +661,35 @@ func (s *AgentService) Stop(conversationID string) {
 	s.runner.stop(conversationID)
 }
 
-// agentSystemPrompt 返回 Agent 的人设作为系统提示词，为空时使用默认文案。
-func agentSystemPrompt(item domain.Agent) string {
-	if strings.TrimSpace(item.Persona) != "" {
-		return item.Persona + "\n\n" + globalRules
+// agentSystemPrompt 返回 Agent 独立的结构化人设。
+// 历史自由文本会退回到「其它要求」；其它字段为空时用名称与职责兜底。
+// 子 Agent 对主助手的称呼固定为「主助手姓名 + 秘书长」。
+func (s *AgentService) agentSystemPrompt(item domain.Agent) string {
+	profile := parsePersonaText(item.Persona)
+	if strings.TrimSpace(profile.Name) == "" {
+		profile.Name = item.Name
 	}
-	return defaultAgentSystemPrompt
+	block := personaPrompt(profile)
+	if block == "" {
+		block = personaPrompt(defaultAgentProfile(item.Name, item.Description))
+	}
+	block += "\n你对主助手的称呼固定为「" + s.leaderTitle() + "」，不要改用其它称呼。"
+	if address := strings.TrimSpace(profile.UserName); address != "" {
+		block += "\n你对用户的称呼固定为「" + address + "」，不要使用其它称呼。"
+	} else {
+		block += "\n对用户的称呼没有指定，请直接用「你」，不要自行使用「老板」「亲爱的」等称呼。"
+	}
+	return block + "\n\n" + globalRules
+}
+
+// leaderTitle 返回子 Agent 对主助手的固定称呼。
+func (s *AgentService) leaderTitle() string {
+	persona, err := loadPersona(context.Background(), s.store)
+	name := strings.TrimSpace(persona.Name)
+	if err != nil || name == "" {
+		name = contract.DefaultAssistantPersona().Name
+	}
+	return name + "秘书长"
 }
 
 func agentError(err error, id string) error {

@@ -201,7 +201,7 @@ func (a *AppStore) MarkUsed(ctx context.Context, id string, at int64) error {
 
 func (a *AppStore) tools(ctx context.Context, appID string) ([]domain.Tool, error) {
 	rows, err := a.s.q.QueryContext(ctx,
-		`SELECT name, description, dangerous, enabled FROM app_tool WHERE app_id = ? ORDER BY rowid ASC`, appID,
+		`SELECT name, description, parameters, timeout_ms, dangerous, enabled FROM app_tool WHERE app_id = ? ORDER BY rowid ASC`, appID,
 	)
 	if err != nil {
 		return nil, wrapErr(err)
@@ -215,7 +215,7 @@ func (a *AppStore) tools(ctx context.Context, appID string) ([]domain.Tool, erro
 			dangerous int
 			enabled   int
 		)
-		if err := rows.Scan(&item.Name, &item.Description, &dangerous, &enabled); err != nil {
+		if err := rows.Scan(&item.Name, &item.Description, &item.Parameters, &item.TimeoutMS, &dangerous, &enabled); err != nil {
 			return nil, wrapErr(err)
 		}
 		item.Dangerous = dangerous != 0
@@ -228,8 +228,9 @@ func (a *AppStore) tools(ctx context.Context, appID string) ([]domain.Tool, erro
 func (a *AppStore) insertTools(ctx context.Context, appID string, tools []domain.Tool) error {
 	for _, tool := range tools {
 		if _, err := a.s.q.ExecContext(ctx,
-			`INSERT INTO app_tool(app_id, name, description, dangerous, enabled) VALUES(?, ?, ?, ?, ?)`,
-			appID, tool.Name, tool.Description, boolInt(tool.Dangerous), boolInt(tool.Enabled),
+			`INSERT INTO app_tool(app_id, name, description, parameters, timeout_ms, dangerous, enabled) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			appID, tool.Name, tool.Description, tool.Parameters, tool.TimeoutMS,
+			boolInt(tool.Dangerous), boolInt(tool.Enabled),
 		); err != nil {
 			return wrapErr(err)
 		}

@@ -117,7 +117,7 @@ func (s *Service) RegisterBuiltin(specs ...ToolSpec) {
 }
 
 // Execute 按注册表解析工具并执行；授权与确认不通过时返回可读错误。
-func (s *Service) Execute(ctx context.Context, toolID, agentID, arguments string) (Result, error) {
+func (s *Service) Execute(ctx context.Context, toolID, agentID, conversationID, arguments string) (Result, error) {
 	start := time.Now()
 
 	spec, ok := s.registry.Lookup(toolID)
@@ -126,7 +126,13 @@ func (s *Service) Execute(ctx context.Context, toolID, agentID, arguments string
 		return Result{}, fmt.Errorf("%w：未注册的工具 %s", ErrNotFound, toolID)
 	}
 
-	call := Call{Tool: spec, AgentID: agentID, Arguments: arguments, Transport: s.opts.Transport}
+	call := Call{
+		Tool:           spec,
+		AgentID:        agentID,
+		ConversationID: conversationID,
+		Arguments:      arguments,
+		Transport:      s.opts.Transport,
+	}
 
 	if err := s.authorize(ctx, spec, agentID); err != nil {
 		s.audit(start, spec, agentID, "denied")
@@ -193,9 +199,12 @@ func (s *Service) authorize(ctx context.Context, spec ToolSpec, agentID string) 
 		return fmt.Errorf("%w：Agent %s 未被授权使用插件 %s 的工具 %s", ErrNotAuthorized, agentID, spec.SourceID, spec.Name)
 
 	case SourceBuiltin:
-		// 内置工具由宿主直接提供；人设工具只允许主助手使用。
+		// 内置工具由宿主直接提供；人设与 Agent 管理只允许主助手使用。
 		if spec.ID == PersonaToolID && agentID != MainAssistantAgentID {
 			return fmt.Errorf("%w：只有主助手可以修改人设", ErrNotAuthorized)
+		}
+		if IsAgentHubTool(spec.ID) && agentID != MainAssistantAgentID {
+			return fmt.Errorf("%w：只有主助手可以创建或调用 Agent", ErrNotAuthorized)
 		}
 		return nil
 
@@ -207,7 +216,12 @@ func (s *Service) authorize(ctx context.Context, spec ToolSpec, agentID string) 
 // run 带超时执行并在 goroutine 中捕获 panic，保证执行异常不拖垮进程。
 // 执行器忽略 ctx 时 goroutine 会残留到其自然结束，这是 in-process 通道的已知限制。
 func (s *Service) run(ctx context.Context, call Call) (Result, error) {
-	runCtx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
+	// 插件或长任务工具可以在 manifest 里声明更长的超时，覆盖服务默认值。
+	timeout := s.opts.Timeout
+	if call.Tool.Timeout > 0 {
+		timeout = call.Tool.Timeout
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	type outcome struct {
@@ -234,7 +248,7 @@ func (s *Service) run(ctx context.Context, call Call) (Result, error) {
 		return o.result, nil
 	case <-runCtx.Done():
 		if ctx.Err() == nil {
-			return Result{}, fmt.Errorf("工具 %s 执行超时（上限 %s）", call.Tool.ID, s.opts.Timeout)
+			return Result{}, fmt.Errorf("工具 %s 执行超时（上限 %s）", call.Tool.ID, timeout)
 		}
 		return Result{}, fmt.Errorf("%w：工具 %s 的执行已取消", ErrCanceled, call.Tool.ID)
 	}

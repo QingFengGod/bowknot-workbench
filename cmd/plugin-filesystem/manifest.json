@@ -1,0 +1,72 @@
+{
+  "id": "file-system",
+  "name": "文件系统",
+  "version": "1.0.2",
+  "description": "读取、写入与整理本地文件，访问范围限于用户主目录与插件数据目录",
+  "runtime": {
+    "type": "native",
+    "commands": {
+      "windows-amd64": "bin/windows-amd64/bowknot-filesystem.exe",
+      "darwin-amd64": "bin/darwin-amd64/bowknot-filesystem",
+      "darwin-arm64": "bin/darwin-arm64/bowknot-filesystem"
+    }
+  },
+  "permissions": {
+    "fs": ["$HOME/**", "$DATA/**"],
+    "net": [],
+    "host": [],
+    "timeoutMs": 30000
+  },
+  "tools": [
+    {
+      "name": "listFiles",
+      "description": "列出指定目录下的文件与子目录，path 支持 ~ 开头与相对路径",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "要列出的目录路径，例如 ~/Documents"
+          }
+        },
+        "required": ["path"]
+      },
+      "timeoutMs": 15000
+    },
+    {
+      "name": "readFile",
+      "description": "读取 UTF-8 文本文件内容，文件大小上限 512KB",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "要读取的文件路径"
+          }
+        },
+        "required": ["path"]
+      },
+      "timeoutMs": 15000
+    },
+    {
+      "name": "writeFile",
+      "description": "写入或覆盖文本文件，内容上限 1MB；覆盖已有文件前需要用户确认",
+      "dangerous": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "要写入的文件路径"
+          },
+          "content": {
+            "type": "string",
+            "description": "完整文件内容"
+          }
+        },
+        "required": ["path", "content"]
+      },
+      "timeoutMs": 30000
+    }
+  ]
+}

@@ -75,12 +75,17 @@ type Page struct {
 	renameValue string
 	renameErr   string
 
-	agentDialogOpen bool
-	editAgentID     string
-	agentName       string
-	agentDesc       string
-	agentPersona    string
-	agentErr        string
+	agentDialogOpen  bool
+	editAgentID      string
+	agentName        string
+	agentDesc        string
+	agentGender      string
+	agentAge         string
+	agentPersonality string
+	agentRole        string
+	agentUserName    string
+	agentCustom      string
+	agentErr         string
 
 	groupDialogOpen bool
 	editGroupID     string
@@ -1246,6 +1251,17 @@ func (p *Page) resolveApproval(approved bool) {
 }
 
 // ---------- 数据加载 ----------
+
+// OnShow 在切换到本页时刷新数据，主助手可能刚创建了 Agent
+// 或产生了新的委派会话。生成中不动消息列表，避免打断流式渲染。
+func (p *Page) OnShow() {
+	p.reloadAgents()
+	p.reloadModels()
+	p.reloadSessions()
+	if !p.streamingActive() {
+		p.reloadMessages()
+	}
+}
 
 func (p *Page) reloadAgents() {
 	if p.svc == nil {

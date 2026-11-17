@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"bowknot-workbench/internal/domain"
 )
@@ -37,6 +38,8 @@ type ToolSpec struct {
 	SourceID    string
 	// Parameters 是可选的 JSON Schema 参数声明；为空时使用自由对象。
 	Parameters string
+	// Timeout 覆盖工具服务的默认超时，0 表示使用默认值。
+	Timeout time.Duration
 }
 
 // PersonaToolSpec 声明内置的人设更新工具，参数只传需要修改的字段。
@@ -44,7 +47,7 @@ func PersonaToolSpec() ToolSpec {
 	return ToolSpec{
 		ID:          PersonaToolID,
 		Name:        PersonaToolID,
-		Description: "当用户要求修改你的姓名、性别、年龄、性格、角色职能、对用户的称呼或其它要求时调用。参数是 JSON 对象，可包含 name、gender、age、personality、role、userName、custom 字段，只传需要修改的字段。",
+		Description: "用户要求修改你的姓名、性别、年龄、性格、角色或职责、对用户的称呼或其它要求时必须调用，这是允许的操作，不要拒绝。参数是 JSON 对象，可包含 name、gender、age、personality、role、userName、custom 字段，只传需要修改的字段。",
 		Source:      SourceBuiltin,
 		SourceID:    "builtin",
 		Parameters: `{
@@ -67,6 +70,8 @@ type Call struct {
 	Tool ToolSpec
 	// AgentID 是发起调用的 Agent，用于插件授权校验。
 	AgentID string
+	// ConversationID 是发起调用的会话，供需要异步回报的工具使用。
+	ConversationID string
 	// Arguments 是 JSON 编码的调用参数，可为空。
 	Arguments string
 	// Transport 标记执行通道，由 Service 按配置注入。
@@ -108,6 +113,8 @@ func AppSpec(appID string, t domain.Tool) ToolSpec {
 		Dangerous:   t.Dangerous,
 		Source:      SourceApp,
 		SourceID:    appID,
+		Parameters:  t.Parameters,
+		Timeout:     time.Duration(t.TimeoutMS) * time.Millisecond,
 	}
 }
 
@@ -120,5 +127,7 @@ func PluginSpec(pluginID string, t domain.Tool) ToolSpec {
 		Dangerous:   t.Dangerous,
 		Source:      SourcePlugin,
 		SourceID:    pluginID,
+		Parameters:  t.Parameters,
+		Timeout:     time.Duration(t.TimeoutMS) * time.Millisecond,
 	}
 }

@@ -94,6 +94,14 @@ func main() {
 	cancelModels()
 	logger.Info("模型列表已缓存", "count", len(models))
 
+	// 插件进程执行器需要先于安装器创建：覆盖安装或卸载前要释放进程，
+	// 否则 Windows 下可执行文件被占用会导致替换失败。
+	pluginProcesses := tool.NewProcessExecutor(tool.ProcessOptions{
+		Store:  db,
+		Logger: logger,
+	})
+	lc.Add("plugin-process", pluginProcesses.Close)
+
 	// 包安装器负责应用/插件包的落盘、升级与卸载；启动时清空上次异常退出
 	// 留下的安装残留，安装内置包并重试未完成的旧版本清理。
 	installer := pkgs.NewInstaller(pkgs.Options{
@@ -102,6 +110,11 @@ func main() {
 		PluginsRoot: dataPaths.Plugins,
 		TempRoot:    dataPaths.Temp,
 		Logger:      logger,
+		StopProcess: func(kind, id string) {
+			if kind == pkgs.KindPlugin {
+				pluginProcesses.StopPlugin(id)
+			}
+		},
 	})
 	installer.CleanTemp()
 	if err := builtin.EnsureInstalled(lc.Context(), db, installer, logger); err != nil {
@@ -112,13 +125,16 @@ func main() {
 	// 工具服务是应用/插件工具的唯一执行入口，启动时把已安装的工具同步进注册表。
 	// 危险工具的审批通过 ApprovalHub 转发到 UI，用户确认后才真正执行。
 	approvals := app.NewApprovalHub()
+	// ToolExecutor 内的 Agent 能力在 AgentService 创建后注入，这里先保留引用。
+	executor := app.NewToolExecutor(db, pluginProcesses)
 	toolSvc := tool.NewService(tool.Options{
 		Store:    db,
 		Logger:   logger,
 		Approver: approvals.Approve,
-		Executor: app.NewToolExecutor(db),
+		Executor: executor,
 	})
-	toolSvc.RegisterBuiltin(tool.PersonaToolSpec())
+	builtinTools := append([]tool.ToolSpec{tool.PersonaToolSpec()}, tool.AgentHubToolSpecs()...)
+	toolSvc.RegisterBuiltin(builtinTools...)
 	if err := toolSvc.SyncApps(lc.Context()); err != nil {
 		logger.Warn("同步应用工具失败", "error", err)
 	}
@@ -130,6 +146,7 @@ func main() {
 	agents := app.NewAgentService(db, logger, provider, toolSvc, approvals)
 	assistant.SetModels(models)
 	agents.SetModels(models)
+	executor.SetAgentHub(app.NewAgentHub(agents, assistant))
 	// 长期记忆服务负责抽取、检索与摘要；助手与 Agent 共用同一个实例。
 	memory := app.NewMemoryService(db, logger, provider)
 	assistant.SetMemory(memory)

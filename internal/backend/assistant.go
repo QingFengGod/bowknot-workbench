@@ -165,6 +165,11 @@ func (s *assistantService) MessagesPage(sessionID string, beforeSeq int64, limit
 	return contract.MessagePage{Items: s.Messages(sessionID)}
 }
 
+// Revision 是内存实现，后台不会追加消息，固定返回 0。
+func (s *assistantService) Revision() uint64 {
+	return 0
+}
+
 func (s *assistantService) Persona() contract.AssistantPersona {
 	s.mu.Lock()
 	defer s.mu.Unlock()

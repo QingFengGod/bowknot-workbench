@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,8 @@ type Options struct {
 	HTTPClient  *http.Client
 	// MaxSize 限制下载与解包总体积，默认 200MB。
 	MaxSize int64
+	// StopProcess 在删除包目录前调用，用于释放插件进程对可执行文件的占用。
+	StopProcess func(kind, id string)
 }
 
 // Installer 负责包的安装、升级、卸载与数据目录管理。
@@ -149,14 +152,20 @@ func (i *Installer) finalize(ctx context.Context, kind, sourceType, sourceValue,
 	if err != nil {
 		return Manifest{}, err
 	}
+	if kind == KindPlugin {
+		if err := checkRuntimeFiles(manifest, staging); err != nil {
+			return Manifest{}, err
+		}
+	}
 
-	// 冲突检查：同类型同版本拒绝；ID 被另一类型占用也拒绝。
+	// 冲突检查：非本地来源拒绝同版本重复安装；本地来源允许覆盖，
+	// 便于插件开发时反复安装同一版本。
 	existing, err := i.getRecord(ctx, kind, manifest.ID)
-	switch {
-	case err == nil && existing.Version == manifest.Version:
-		return Manifest{}, fmt.Errorf("%w：%s %s 已安装相同版本 %s", ErrAlreadyInstalled, kind, manifest.ID, manifest.Version)
-	case err != nil && !errors.Is(err, store.ErrNotFound):
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return Manifest{}, fmt.Errorf("查询已安装记录失败：%w", err)
+	}
+	if err == nil && existing.Version == manifest.Version && sourceType != SourceTypeLocal {
+		return Manifest{}, fmt.Errorf("%w：%s %s 已安装相同版本 %s", ErrAlreadyInstalled, kind, manifest.ID, manifest.Version)
 	}
 	// 插件升级时保留已有授权，首次安装保持空授权。
 	var upgradeGrants []string
@@ -170,6 +179,7 @@ func (i *Installer) finalize(ctx context.Context, kind, sourceType, sourceValue,
 	}
 
 	target := i.versionDir(kind, manifest.ID, manifest.Version)
+	i.stopProcess(kind, manifest.ID)
 	if err := os.RemoveAll(target); err != nil {
 		return Manifest{}, fmt.Errorf("清理旧版本目录失败：%w", err)
 	}
@@ -213,6 +223,17 @@ func (i *Installer) finalize(ctx context.Context, kind, sourceType, sourceValue,
 				SourceValue: sourceValue,
 				InstallDir:  target,
 				InstalledAt: now,
+				Runtime: domain.Runtime{
+					Type:     manifest.Runtime.Type,
+					Entry:    manifest.Runtime.Entry,
+					Commands: manifest.Runtime.Commands,
+				},
+				Permissions: domain.Permissions{
+					FS:        manifest.Permissions.FS,
+					Net:       manifest.Permissions.Net,
+					Host:      manifest.Permissions.Host,
+					TimeoutMS: manifest.Permissions.TimeoutMS,
+				},
 			}
 			if err := tx.Plugins.Upsert(ctx, item); err != nil {
 				return err
@@ -257,6 +278,7 @@ func (i *Installer) Uninstall(ctx context.Context, kind, id string, keepData boo
 	}
 
 	// 数据库已删除，文件清理尽力而为；Windows 文件占用等失败下次清理。
+	i.stopProcess(kind, id)
 	packageDir := i.packageDir(kind, id)
 	if keepData && item.InstallDir != "" {
 		packageDir = item.InstallDir
@@ -406,6 +428,60 @@ type record struct {
 	AgentIDs   []string
 }
 
+// stopProcess 通知上层释放可能正在运行的插件进程。
+func (i *Installer) stopProcess(kind, id string) {
+	if i.opts.StopProcess != nil {
+		i.opts.StopProcess(kind, id)
+	}
+}
+
+// platformKey 返回当前平台在 manifest.runtime.commands 中使用的标识。
+func platformKey() string {
+	return runtime.GOOS + "-" + runtime.GOARCH
+}
+
+// checkRuntimeFiles 校验当前平台需要的运行文件确实在包内：
+// native 缺少平台条目直接拒绝安装，bun 要求入口文件存在。
+// 可执行文件补一次 0755，兼容从 Windows 打包、在 macOS 上丢失执行位的情况。
+func checkRuntimeFiles(manifest Manifest, root string) error {
+	switch manifest.Runtime.Type {
+	case "native":
+		key := platformKey()
+		command, ok := manifest.Runtime.Commands[key]
+		if !ok {
+			supported := make([]string, 0, len(manifest.Runtime.Commands))
+			for platform := range manifest.Runtime.Commands {
+				supported = append(supported, platform)
+			}
+			sort.Strings(supported)
+			return fmt.Errorf("插件 %s 不支持当前平台 %s（支持：%s）", manifest.ID, key, strings.Join(supported, "、"))
+		}
+		if err := ensureExecutable(filepath.Join(root, filepath.FromSlash(command))); err != nil {
+			return fmt.Errorf("插件 %s 的当前平台可执行文件不可用：%w", manifest.ID, err)
+		}
+	case "bun":
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(manifest.Runtime.Entry))); err != nil {
+			return fmt.Errorf("插件 %s 缺少 bun 入口文件：%w", manifest.ID, err)
+		}
+	}
+	return nil
+}
+
+// ensureExecutable 确认目标是非目录的普通文件，并在非 Windows 平台补齐执行位。
+func ensureExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("路径 %s 是目录而不是可执行文件", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return os.Chmod(path, 0o755)
+	}
+	return nil
+}
+
 // manifestTools 把 manifest 工具声明转换为 domain.Tool。
 // 应用工具默认启用；插件工具没有全局开关，Enabled 由调用方决定。
 func manifestTools(tools []ManifestTool, enabled bool) []domain.Tool {
@@ -414,6 +490,8 @@ func manifestTools(tools []ManifestTool, enabled bool) []domain.Tool {
 		out = append(out, domain.Tool{
 			Name:        t.Name,
 			Description: t.Description,
+			Parameters:  string(t.Parameters),
+			TimeoutMS:   t.TimeoutMS,
 			Dangerous:   t.Dangerous,
 			Enabled:     enabled,
 		})

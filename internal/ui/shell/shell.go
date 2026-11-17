@@ -353,6 +353,9 @@ func (s *Shell) navigate(route string) {
 
 	if page, ok := s.native[route]; ok {
 		s.current = page
+		if showable, ok := page.(pages.Showable); ok {
+			showable.OnShow()
+		}
 	} else {
 		s.current = nil
 	}

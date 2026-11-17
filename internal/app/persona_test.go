@@ -177,7 +177,7 @@ func TestToolExecutorUpdatesPersona(t *testing.T) {
 		t.Fatalf("SetPersona() error = %v", err)
 	}
 
-	executor := NewToolExecutor(st)
+	executor := NewToolExecutor(st, nil)
 	result, err := executor.Execute(context.Background(), tool.Call{
 		Tool:      tool.PersonaToolSpec(),
 		Arguments: `{"name":"小助手","personality":"活泼","userName":"老板"}`,

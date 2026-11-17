@@ -211,11 +211,24 @@ func TestInstallLocalTarApp(t *testing.T) {
 		t.Fatalf("tmp 目录残留：%+v", entries)
 	}
 
-	// 相同版本重复安装被拒绝。
-	_, err = installer.InstallArchive(context.Background(), KindApp, SourceTypeLocal, "memory.tar",
+	// 非本地来源的相同版本重复安装被拒绝。
+	_, err = installer.InstallArchive(context.Background(), KindApp, SourceTypeBuiltin, "memory.tar",
 		buildTar(t, validManifest, nil))
 	if !errors.Is(err, ErrAlreadyInstalled) {
 		t.Fatalf("重复安装 = %v, want ErrAlreadyInstalled", err)
+	}
+
+	// 本地来源允许覆盖同一版本，便于插件开发时反复安装。
+	if _, err := installer.InstallArchive(context.Background(), KindApp, SourceTypeLocal, "memory.tar",
+		buildTar(t, validManifest, map[string]string{"index.html": "<h1>v2</h1>"})); err != nil {
+		t.Fatalf("本地覆盖安装失败：%v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(installed, "index.html"))
+	if err != nil {
+		t.Fatalf("读取覆盖后的文件失败：%v", err)
+	}
+	if string(body) != "<h1>v2</h1>" {
+		t.Fatalf("覆盖后的文件内容 = %q", body)
 	}
 }
 
@@ -254,6 +267,59 @@ func contains(list []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// nativeManifest 构造一个声明 native 运行方式与工具参数的插件清单。
+func nativeManifest(platforms string) string {
+	return `{
+	  "id": "file-system",
+	  "name": "文件系统",
+	  "version": "1.0.2",
+	  "runtime": {"type": "native", "commands": {` + platforms + `}},
+	  "permissions": {"fs": ["$DATA/**"], "timeoutMs": 15000},
+	  "tools": [{
+	    "name": "listFiles",
+	    "description": "列出目录",
+	    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+	    "timeoutMs": 5000
+	  }]
+	}`
+}
+
+func TestInstallNativePluginKeepsRuntimeAndParameters(t *testing.T) {
+	installer, st, _ := testEnv(t)
+	ctx := context.Background()
+
+	platforms := `"` + platformKey() + `": "bin/server"`
+	if _, err := installer.InstallArchive(ctx, KindPlugin, SourceTypeBuiltin, "fs.tar",
+		buildTar(t, nativeManifest(platforms), map[string]string{"bin/server": "binary"})); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	plugin, err := st.Plugins.Get(ctx, "file-system")
+	if err != nil {
+		t.Fatalf("plugin record: %v", err)
+	}
+	if plugin.Runtime.Type != "native" || plugin.Runtime.Commands[platformKey()] != "bin/server" {
+		t.Fatalf("runtime = %+v", plugin.Runtime)
+	}
+	if plugin.Permissions.TimeoutMS != 15000 {
+		t.Fatalf("permissions = %+v", plugin.Permissions)
+	}
+	if len(plugin.Tools) != 1 || plugin.Tools[0].TimeoutMS != 5000 ||
+		!strings.Contains(plugin.Tools[0].Parameters, `"path"`) {
+		t.Fatalf("tools = %+v", plugin.Tools)
+	}
+}
+
+func TestInstallRejectsUnsupportedPlatform(t *testing.T) {
+	installer, _, _ := testEnv(t)
+
+	_, err := installer.InstallArchive(context.Background(), KindPlugin, SourceTypeBuiltin, "fs.tar",
+		buildTar(t, nativeManifest(`"plan9-mips": "bin/server"`), map[string]string{"bin/server": "binary"}))
+	if err == nil || !strings.Contains(err.Error(), "不支持当前平台") {
+		t.Fatalf("不支持平台安装 error = %v", err)
+	}
 }
 
 func TestInstallConflictWithOtherKind(t *testing.T) {

@@ -143,6 +143,8 @@ type AssistantService interface {
 	Models() []ChatModel
 	// Persona 返回主助手的人设，未配置时返回默认人设。
 	Persona() AssistantPersona
+	// Revision 返回后台追加消息的版本号，UI 据此刷新当前会话。
+	Revision() uint64
 	// SetPersona 保存主助手的人设。
 	SetPersona(persona AssistantPersona) error
 	// Greeting 返回进入空对话时的主动问候：首次使用自我介绍，之后按最近记忆关心近况。

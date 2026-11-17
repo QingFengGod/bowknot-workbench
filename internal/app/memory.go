@@ -295,8 +295,10 @@ func (m *MemoryService) ExtractAsync(agentID, conversationID, messageID, userTex
 }
 
 func (m *MemoryService) extract(ctx context.Context, agentID, conversationID, messageID, userText, replyText string) error {
+	now := m.now()
 	req := llm.ChatRequest{
-		System: memoryExtractSystemPrompt,
+		System: fmt.Sprintf("%s\n当前时间：%s。occurred_at 只能基于当前时间推算；对话里没有明确日期时，直接使用当前时间，严禁编造日期。",
+			memoryExtractSystemPrompt, now.Format("2006-01-02 15:04:05")),
 		Messages: []llm.Message{{
 			Role:    "user",
 			Content: fmt.Sprintf("用户消息：%s\n助手回复：%s", userText, replyText),
@@ -314,7 +316,6 @@ func (m *MemoryService) extract(ctx context.Context, agentID, conversationID, me
 		return nil
 	}
 
-	now := m.now()
 	written := 0
 	for _, candidate := range candidates {
 		if written >= memoryExtractLimit {
@@ -342,24 +343,19 @@ func (m *MemoryService) extract(ctx context.Context, agentID, conversationID, me
 }
 
 // candidateToMemory 校验并规范化一条候选记忆，命中敏感信息或开关关闭时跳过。
+// 记忆归属由会话所属 Agent 决定：主助手写入用户全局域，子 Agent 写入自己的专属域，
+// 不采用模型给出的 scope，避免两套记忆互相污染。
 func (m *MemoryService) candidateToMemory(candidate memoryCandidate, agentID, conversationID, messageID string, now time.Time) (domain.Memory, bool) {
-	scope := domain.MemoryScope(strings.TrimSpace(candidate.Scope))
-	if scope != domain.MemoryScopeUser && scope != domain.MemoryScopeAgent {
-		scope = domain.MemoryScopeUser
-	}
-	if scope == domain.MemoryScopeAgent && (agentID == "" || agentID == mainAgentID) {
-		// 内置助手没有独立的 Agent 记忆域，统一归入用户全局记忆。
-		scope = domain.MemoryScopeUser
-	}
-
+	scope := domain.MemoryScopeUser
 	owner := userMemoryOwnerID
-	if scope == domain.MemoryScopeAgent {
+	if agentID != "" && agentID != mainAgentID {
+		scope = domain.MemoryScopeAgent
 		owner = agentID
 	}
 	if scope == domain.MemoryScopeUser && !m.MemoryEnabled("") {
 		return domain.Memory{}, false
 	}
-	if scope == domain.MemoryScopeAgent && owner != "" && !m.MemoryEnabled(owner) {
+	if scope == domain.MemoryScopeAgent && !m.MemoryEnabled(owner) {
 		return domain.Memory{}, false
 	}
 
@@ -379,7 +375,10 @@ func (m *MemoryService) candidateToMemory(candidate memoryCandidate, agentID, co
 
 	occurredAt := now
 	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(candidate.OccurredAt)); err == nil {
-		occurredAt = parsed
+		// 模型偶尔会编造几个月前或未来的日期；只接受近期的时间，其余回退到当前时间。
+		if !parsed.Before(now.Add(-7*24*time.Hour)) && !parsed.After(now.Add(24*time.Hour)) {
+			occurredAt = parsed
+		}
 	}
 	confidence := candidate.Confidence
 	if confidence <= 0 || confidence > 1 {
@@ -449,22 +448,22 @@ func (m *MemoryService) save(ctx context.Context, item domain.Memory) (bool, err
 }
 
 // PromptBlock 组装注入 prompt 的记忆块；没有可用记忆时返回空字符串。
+// 主助手只读用户全局域，子 Agent 只读自己的专属域，两边不交叉注入。
 func (m *MemoryService) PromptBlock(agentID, question string) string {
 	if m == nil {
 		return ""
 	}
-	globalOn := m.MemoryEnabled("")
-	agentOn := agentID != "" && agentID != mainAgentID && m.MemoryEnabled(agentID)
-	if !globalOn && !agentOn {
-		return ""
-	}
 
-	owners := make([]memoryOwner, 0, 2)
-	if globalOn {
-		owners = append(owners, memoryOwner{scope: domain.MemoryScopeUser, owner: userMemoryOwnerID})
-	}
-	if agentOn {
+	owners := make([]memoryOwner, 0, 1)
+	if agentID == "" || agentID == mainAgentID {
+		if m.MemoryEnabled("") {
+			owners = append(owners, memoryOwner{scope: domain.MemoryScopeUser, owner: userMemoryOwnerID})
+		}
+	} else if m.MemoryEnabled(agentID) {
 		owners = append(owners, memoryOwner{scope: domain.MemoryScopeAgent, owner: agentID})
+	}
+	if len(owners) == 0 {
+		return ""
 	}
 
 	now := m.now()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"bowknot-workbench/internal/domain"
@@ -53,8 +54,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := first.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("schema version = %d, want 4", version)
+	if version != 8 {
+		t.Fatalf("schema version = %d, want 8", version)
 	}
 	var tables int
 	if err := first.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation'`).Scan(&tables); err != nil {
@@ -77,8 +78,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 4 {
-		t.Fatalf("applied migrations = %d, want 4", count)
+	if count != 8 {
+		t.Fatalf("applied migrations = %d, want 8", count)
 	}
 }
 
@@ -530,6 +531,141 @@ func TestClosed(t *testing.T) {
 	}
 	if err := s.Tx(ctx, func(*Store) error { return nil }); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Tx() error = %v, want ErrClosed", err)
+	}
+}
+
+func TestAgentDefaultPersonaMigration(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent(id, name, description, persona, created_at, updated_at) VALUES
+		 ('agent-1', '文案助手', '擅长产品文案', '', 1, 1),
+		 ('agent-2', '空描述', '暂无描述', '', 1, 1),
+		 ('agent-3', '已有', 'x', '自定义人设', 1, 1)`); err != nil {
+		t.Fatalf("insert agents: %v", err)
+	}
+
+	body, err := migrationFiles.ReadFile("migrations/0008_agent_default_persona.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+			t.Fatalf("apply migration: %v", err)
+		}
+	}
+
+	persona := func(id string) string {
+		t.Helper()
+		var value string
+		if err := s.db.QueryRowContext(ctx, `SELECT persona FROM agent WHERE id = ?`, id).Scan(&value); err != nil {
+			t.Fatalf("query persona %s: %v", id, err)
+		}
+		return value
+	}
+	if got := persona("agent-1"); !strings.Contains(got, "文案助手") || !strings.Contains(got, "擅长产品文案") {
+		t.Fatalf("agent-1 persona = %q", got)
+	}
+	if got := persona("agent-2"); !strings.Contains(got, "简洁") {
+		t.Fatalf("agent-2 persona = %q", got)
+	}
+	if got := persona("agent-3"); got != "自定义人设" {
+		t.Fatalf("已有的人设被覆盖：%q", got)
+	}
+}
+
+// 旧的子 Agent 记忆落在用户全局域，迁移应按来源会话把它们搬回 Agent 专属域。
+func TestMemoryIsolationMigration(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO conversation(id, kind, owner_id, title, created_at, updated_at) VALUES
+		 ('conv-agent', 'agent', 'agent-1', '子 Agent 会话', 1, 1),
+		 ('conv-main', 'assistant', 'main', '主助手会话', 1, 1)`); err != nil {
+		t.Fatalf("insert conversations: %v", err)
+	}
+
+	insertMemory := func(id, scope, owner, kind, content, hash, convID string) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO memory(id, scope, owner_id, kind, content, content_hash, occurred_at, day_key,
+			                    source_conversation_id, created_at, updated_at)
+			 VALUES(?, ?, ?, ?, ?, ?, 1, '2026-11-17', ?, 1, 1)`,
+			id, scope, owner, kind, content, hash, convID); err != nil {
+			t.Fatalf("insert memory %s: %v", id, err)
+		}
+	}
+	// 误落在用户全局域的子 Agent 记忆，以及一条与 Agent 域重复的记录。
+	insertMemory("m-agent-user", "user", "main", "fact", "子 Agent 的上下文", "h1", "conv-agent")
+	insertMemory("m-agent-dup", "agent", "agent-1", "fact", "子 Agent 的上下文", "h1", "conv-agent")
+	// 主助手自己的记忆必须保持不动。
+	insertMemory("m-main", "user", "main", "preference", "用户偏好中文", "h2", "conv-main")
+
+	body, err := migrationFiles.ReadFile("migrations/0007_memory_agent_isolation.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	// 重复执行应当幂等。
+	for i := 0; i < 2; i++ {
+		if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+			t.Fatalf("apply migration: %v", err)
+		}
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory WHERE id = 'm-agent-user'`).Scan(&count); err != nil {
+		t.Fatalf("query moved memory: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("与 Agent 域重复的全局记忆没有被清理")
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory WHERE id = 'm-main' AND scope = 'user' AND owner_id = 'main'`).Scan(&count); err != nil {
+		t.Fatalf("query main memory: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("主助手的用户记忆被误改")
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory WHERE id = 'm-agent-dup' AND scope = 'agent' AND owner_id = 'agent-1'`).Scan(&count); err != nil {
+		t.Fatalf("query agent memory: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("Agent 专属记忆被误改")
+	}
+}
+
+// 没有重复记录时，迁移应把全局记忆搬回来源 Agent。
+func TestMemoryIsolationMigrationMovesWithoutDuplicate(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO conversation(id, kind, owner_id, title, created_at, updated_at)
+		 VALUES('conv-agent', 'agent', 'agent-1', '子 Agent 会话', 1, 1)`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO memory(id, scope, owner_id, kind, content, content_hash, occurred_at, day_key,
+		                    source_conversation_id, created_at, updated_at)
+		 VALUES('m1', 'user', 'main', 'fact', '只有全局副本', 'h1', 1, '2026-11-17', 'conv-agent', 1, 1)`); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	body, err := migrationFiles.ReadFile("migrations/0007_memory_agent_isolation.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+
+	var scope, owner string
+	if err := s.db.QueryRowContext(ctx, `SELECT scope, owner_id FROM memory WHERE id = 'm1'`).Scan(&scope, &owner); err != nil {
+		t.Fatalf("query memory: %v", err)
+	}
+	if scope != "agent" || owner != "agent-1" {
+		t.Fatalf("迁移后 scope=%s owner=%s", scope, owner)
 	}
 }
 

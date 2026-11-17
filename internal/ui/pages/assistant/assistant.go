@@ -35,6 +35,8 @@ type Page struct {
 
 	activeID string
 	messages []contract.ChatMessage
+	// lastReportRevision 记录已处理的后台汇报版本，避免每帧重复加载。
+	lastReportRevision uint64
 	// 消息分页：oldestSeq 是已加载消息的最小 seq，hasMore 表示还有更早的消息。
 	oldestSeq int64
 	hasMore   bool
@@ -128,6 +130,7 @@ func New(svc contract.AssistantService, memory contract.MemoryService, hooks Hoo
 }
 
 func (p *Page) View(c *ui.Context) {
+	p.refreshBackgroundReports()
 	if !p.shown {
 		p.shown = true
 		p.greetOnLaunch()
@@ -625,15 +628,15 @@ func (p *Page) deleteModal(c *ui.Context) {
 	}
 
 	switch ui.AlertDialog(c, &p.deleteOpen, "删除会话",
-		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title), "删除", "取消") {
-	case 0:
+		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", session.Title), "取消", "删除") {
+	case 1:
 		p.deleteSession()
 	}
 }
 
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "删除", "取消") {
-	case 0:
+	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") {
+	case 1:
 		p.deleteMessage()
 	}
 }
@@ -1007,6 +1010,30 @@ func (p *Page) deleteMessage() {
 	p.deleteMessageID = ""
 	p.deleteMessageSession = ""
 	p.reloadMessages()
+}
+
+// OnShow 在切回助手页时刷新会话与消息，后台委派的汇报可能已经落库。
+func (p *Page) OnShow() {
+	p.reloadSessions()
+	p.reloadModels()
+	if !p.streaming(p.activeID) {
+		p.reloadMessages()
+	}
+}
+
+// refreshBackgroundReports 在后台追加汇报消息后刷新当前会话。
+// 生成中先不打断流式渲染，等这一轮结束后再补一次刷新。
+func (p *Page) refreshBackgroundReports() {
+	if p.svc == nil {
+		return
+	}
+	revision := p.svc.Revision()
+	if revision == p.lastReportRevision || p.streaming(p.activeID) {
+		return
+	}
+	p.lastReportRevision = revision
+	p.reloadMessages()
+	p.reloadSessions()
 }
 
 func (p *Page) reloadSessions() {

@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -88,58 +89,116 @@ func (p *Page) agentDialog(c *ui.Context) {
 			}
 		},
 	}, func() {
-		ui.Text(c, "名称").FontSize(12).Bold().TextColor(t.TextMuted)
-		nameInput := ui.TextInput(c, &p.agentName).Placeholder("例如：写作助手").MaxLength(20)
-		if nameInput.Changed() {
-			p.agentErr = ""
-		}
+		ui.Scroll(c).FillWidth().Height(400).Children(func() {
+			ui.Column(c).FillWidth().Gap(8).Children(func() {
+				ui.Text(c, "姓名").FontSize(12).Bold().TextColor(t.TextMuted)
+				nameInput := ui.TextInput(c, &p.agentName).Placeholder("例如：写作助手").MaxLength(20)
+				if nameInput.Changed() {
+					p.agentErr = ""
+				}
 
-		ui.Text(c, "描述").FontSize(12).Bold().TextColor(t.TextMuted)
-		ui.TextInput(c, &p.agentDesc).Placeholder("一句话说明它负责什么").MaxLength(40)
+				ui.Text(c, "简介").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentDesc).Placeholder("一句话说明它负责什么").MaxLength(40)
 
-		ui.Text(c, "人设").FontSize(12).Bold().TextColor(t.TextMuted)
-		ui.TextAreaBase(c, &p.agentPersona).
-			Placeholder("描述它的身份、语气与行为边界").
-			Lines(4, 8).
-			FillWidth().
-			MaxLength(300)
+				ui.Text(c, "性别").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentGender).Placeholder("例如：女").MaxLength(10)
 
-		if p.agentErr != "" {
-			ui.Text(c, p.agentErr).FontSize(12).TextColor(t.Danger)
-		}
+				ui.Text(c, "年龄").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentAge).Placeholder("例如：24").MaxLength(10)
 
-		if nameInput.Submitted() && canSave {
-			p.submitAgent()
-		}
+				ui.Text(c, "性格").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentPersonality).Placeholder("例如：严谨、耐心").MaxLength(60)
+
+				ui.Text(c, "角色或职责").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentRole).Placeholder("例如：负责产品文案撰写").MaxLength(60)
+
+				ui.Text(c, "对用户的称呼").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextInput(c, &p.agentUserName).Placeholder("例如：老板").MaxLength(20)
+
+				ui.Text(c, "其它要求").FontSize(12).Bold().TextColor(t.TextMuted)
+				ui.TextAreaBase(c, &p.agentCustom).
+					Placeholder("补充表达习惯、行为边界等").
+					Lines(3, 6).
+					FillWidth().
+					MaxLength(300)
+
+				if p.agentErr != "" {
+					ui.Text(c, p.agentErr).FontSize(12).TextColor(t.Danger)
+				}
+
+				if nameInput.Submitted() && canSave {
+					p.submitAgent()
+				}
+			})
+		})
 	})
 }
 
 func (p *Page) openAgentDialog(id string) {
 	p.editAgentID = id
 	p.agentErr = ""
+	p.agentName = ""
+	p.agentDesc = ""
+	p.agentGender = ""
+	p.agentAge = ""
+	p.agentPersonality = ""
+	p.agentRole = ""
+	p.agentUserName = ""
+	p.agentCustom = ""
 	if agent := p.agentByID(id); agent != nil {
+		profile := parseAgentProfile(agent.Persona)
 		p.agentName = agent.Name
 		p.agentDesc = agent.Description
-		p.agentPersona = agent.Persona
-	} else {
-		p.agentName = ""
-		p.agentDesc = ""
-		p.agentPersona = ""
+		p.agentGender = profile.Gender
+		p.agentAge = profile.Age
+		p.agentPersonality = profile.Personality
+		p.agentRole = profile.Role
+		p.agentUserName = profile.UserName
+		p.agentCustom = profile.Custom
 	}
 	p.agentDialogOpen = true
+}
+
+// parseAgentProfile 解析 Agent 人设；历史自由文本整体放进「其它要求」。
+func parseAgentProfile(raw string) contract.AssistantPersona {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return contract.AssistantPersona{}
+	}
+	if strings.HasPrefix(raw, "{") {
+		var profile contract.AssistantPersona
+		if err := json.Unmarshal([]byte(raw), &profile); err == nil {
+			return profile
+		}
+	}
+	return contract.AssistantPersona{Custom: raw}
 }
 
 func (p *Page) submitAgent() {
 	if p.svc == nil {
 		return
 	}
+	data, err := json.Marshal(contract.AssistantPersona{
+		Name:        strings.TrimSpace(p.agentName),
+		Gender:      strings.TrimSpace(p.agentGender),
+		Age:         strings.TrimSpace(p.agentAge),
+		Personality: strings.TrimSpace(p.agentPersonality),
+		Role:        strings.TrimSpace(p.agentRole),
+		UserName:    strings.TrimSpace(p.agentUserName),
+		Custom:      strings.TrimSpace(p.agentCustom),
+	})
+	if err != nil {
+		p.agentErr = "保存人设失败：" + err.Error()
+		return
+	}
+	persona := string(data)
 	if p.editAgentID != "" {
-		if err := p.svc.UpdateAgent(p.editAgentID, p.agentName, p.agentDesc, p.agentPersona); err != nil {
+		if err := p.svc.UpdateAgent(p.editAgentID, p.agentName, p.agentDesc, persona); err != nil {
 			p.agentErr = err.Error()
 			return
 		}
 	} else {
-		agent := p.svc.CreateAgent(p.agentName, p.agentDesc, p.agentPersona)
+		agent := p.svc.CreateAgent(p.agentName, p.agentDesc, persona)
 		p.reloadAgents()
 		p.selectItem("agent:" + agent.ID)
 	}

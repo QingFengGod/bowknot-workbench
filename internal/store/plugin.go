@@ -2,11 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 
 	"bowknot-workbench/internal/domain"
 )
 
-const pluginColumns = `id, name, version, description, icon_text, source_type, source_value, install_dir, installed_at`
+const pluginColumns = `id, name, version, description, icon_text, source_type, source_value, install_dir, installed_at, runtime, permissions`
 
 type PluginStore struct {
 	s *Store
@@ -81,9 +82,10 @@ func (p *PluginStore) insert(ctx context.Context, item domain.Plugin) error {
 	}
 
 	_, err := p.s.q.ExecContext(ctx,
-		`INSERT INTO plugin(`+pluginColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO plugin(`+pluginColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Name, item.Version, item.Description, item.IconText,
 		item.SourceType, item.SourceValue, item.InstallDir, item.InstalledAt,
+		marshalPluginRuntime(item.Runtime), marshalPluginPermissions(item.Permissions),
 	)
 	if err != nil {
 		return wrapErr(err)
@@ -110,7 +112,7 @@ func (p *PluginStore) upsert(ctx context.Context, item domain.Plugin) error {
 	}
 
 	_, err := p.s.q.ExecContext(ctx,
-		`INSERT INTO plugin(`+pluginColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO plugin(`+pluginColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			version = excluded.version,
@@ -119,9 +121,12 @@ func (p *PluginStore) upsert(ctx context.Context, item domain.Plugin) error {
 			source_type = excluded.source_type,
 			source_value = excluded.source_value,
 			install_dir = excluded.install_dir,
-			installed_at = excluded.installed_at`,
+			installed_at = excluded.installed_at,
+			runtime = excluded.runtime,
+			permissions = excluded.permissions`,
 		item.ID, item.Name, item.Version, item.Description, item.IconText,
 		item.SourceType, item.SourceValue, item.InstallDir, item.InstalledAt,
+		marshalPluginRuntime(item.Runtime), marshalPluginPermissions(item.Permissions),
 	)
 	return wrapErr(err)
 }
@@ -209,7 +214,7 @@ func (p *PluginStore) loadRelations(ctx context.Context, item *domain.Plugin) er
 
 func (p *PluginStore) tools(ctx context.Context, pluginID string) ([]domain.Tool, error) {
 	rows, err := p.s.q.QueryContext(ctx,
-		`SELECT name, description, dangerous FROM plugin_tool WHERE plugin_id = ? ORDER BY rowid ASC`, pluginID,
+		`SELECT name, description, parameters, timeout_ms, dangerous FROM plugin_tool WHERE plugin_id = ? ORDER BY rowid ASC`, pluginID,
 	)
 	if err != nil {
 		return nil, wrapErr(err)
@@ -222,7 +227,7 @@ func (p *PluginStore) tools(ctx context.Context, pluginID string) ([]domain.Tool
 			item      domain.Tool
 			dangerous int
 		)
-		if err := rows.Scan(&item.Name, &item.Description, &dangerous); err != nil {
+		if err := rows.Scan(&item.Name, &item.Description, &item.Parameters, &item.TimeoutMS, &dangerous); err != nil {
 			return nil, wrapErr(err)
 		}
 		item.Dangerous = dangerous != 0
@@ -255,8 +260,8 @@ func (p *PluginStore) grants(ctx context.Context, pluginID string) ([]string, er
 func (p *PluginStore) insertTools(ctx context.Context, pluginID string, tools []domain.Tool) error {
 	for _, tool := range tools {
 		if _, err := p.s.q.ExecContext(ctx,
-			`INSERT INTO plugin_tool(plugin_id, name, description, dangerous) VALUES(?, ?, ?, ?)`,
-			pluginID, tool.Name, tool.Description, boolInt(tool.Dangerous),
+			`INSERT INTO plugin_tool(plugin_id, name, description, parameters, timeout_ms, dangerous) VALUES(?, ?, ?, ?, ?, ?)`,
+			pluginID, tool.Name, tool.Description, tool.Parameters, tool.TimeoutMS, boolInt(tool.Dangerous),
 		); err != nil {
 			return wrapErr(err)
 		}
@@ -278,9 +283,38 @@ func (p *PluginStore) insertGrants(ctx context.Context, pluginID string, agentID
 
 func scanPlugin(row rowScanner) (domain.Plugin, error) {
 	var item domain.Plugin
+	var runtimeJSON, permissionsJSON string
 	err := row.Scan(
 		&item.ID, &item.Name, &item.Version, &item.Description, &item.IconText,
 		&item.SourceType, &item.SourceValue, &item.InstallDir, &item.InstalledAt,
+		&runtimeJSON, &permissionsJSON,
 	)
-	return item, err
+	if err != nil {
+		return item, err
+	}
+	if err := json.Unmarshal([]byte(runtimeJSON), &item.Runtime); err != nil {
+		return item, err
+	}
+	if err := json.Unmarshal([]byte(permissionsJSON), &item.Permissions); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+// marshalPluginRuntime 把运行方式序列化为 JSON 文本，空值写成空对象
+// 以保证读回时能稳定反序列化。
+func marshalPluginRuntime(item domain.Runtime) string {
+	data, err := json.Marshal(item)
+	if err != nil || len(data) == 0 {
+		return "{}"
+	}
+	return string(data)
+}
+
+func marshalPluginPermissions(item domain.Permissions) string {
+	data, err := json.Marshal(item)
+	if err != nil || len(data) == 0 {
+		return "{}"
+	}
+	return string(data)
 }

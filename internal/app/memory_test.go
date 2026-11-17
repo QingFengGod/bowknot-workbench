@@ -17,6 +17,42 @@ func memoryTestStore(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "test.db")
 }
 
+// TestCandidateToMemoryRejectsHallucinatedDate 验证模型编造的久远日期会回退到当前时间。
+func TestCandidateToMemoryRejectsHallucinatedDate(t *testing.T) {
+	st := openTestStore(t, memoryTestStore(t), false)
+	svc := NewMemoryService(st, testLogger(), fastFake())
+	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
+
+	now := time.Date(2026, 11, 17, 10, 0, 0, 0, time.Local)
+	item, ok := svc.candidateToMemory(memoryCandidate{
+		Scope:      "user",
+		Kind:       "fact",
+		Content:    "我喜欢看英雄联盟游戏视频",
+		OccurredAt: "2026-07-19T10:00:00+08:00",
+	}, mainAgentID, "conv", "msg", now)
+	if !ok {
+		t.Fatal("候选记忆不应被丢弃")
+	}
+	if item.DayKey != "2026-11-17" || item.OccurredAt != now.UnixMilli() {
+		t.Fatalf("久远日期未回退：day=%s occurred=%d", item.DayKey, item.OccurredAt)
+	}
+
+	// 近期日期仍然保留，用于记录「昨天」这类明确时间。
+	recent := now.Add(-30 * time.Hour)
+	item, ok = svc.candidateToMemory(memoryCandidate{
+		Scope:      "user",
+		Kind:       "event",
+		Content:    "我昨天去看了一场电影",
+		OccurredAt: recent.Format(time.RFC3339),
+	}, mainAgentID, "conv", "msg", now)
+	if !ok {
+		t.Fatal("近期候选记忆不应被丢弃")
+	}
+	if item.DayKey != dayKeyOf(recent) {
+		t.Fatalf("近期日期被改写：day=%s want=%s", item.DayKey, dayKeyOf(recent))
+	}
+}
+
 func TestExtractAsyncWritesScopedMemories(t *testing.T) {
 	st := openTestStore(t, memoryTestStore(t), false)
 	ctx := context.Background()
@@ -45,11 +81,20 @@ func TestExtractAsyncWritesScopedMemories(t *testing.T) {
 	svc.ExtractAsync("agent-1", "conv-1", "msg-1", "我偏好中文回复，负责支付模块", "好的")
 	svc.wg.Wait()
 
-	if items := svc.Memories("user", ""); len(items) != 1 || items[0].Content != "用户偏好中文回复" {
-		t.Fatalf("用户记忆 = %+v", items)
+	// 子 Agent 的记忆全部写入它自己的专属域，不进入用户全局域。
+	if items := svc.Memories("user", ""); len(items) != 0 {
+		t.Fatalf("子 Agent 不应写入用户全局记忆：%+v", items)
 	}
-	if items := svc.Memories("agent", "agent-1"); len(items) != 1 || items[0].Content != "用户负责支付模块" {
-		t.Fatalf("Agent 记忆 = %+v", items)
+	agentMemories := svc.Memories("agent", "agent-1")
+	if len(agentMemories) != 2 {
+		t.Fatalf("Agent 记忆 = %+v", agentMemories)
+	}
+	contents := map[string]bool{}
+	for _, item := range agentMemories {
+		contents[item.Content] = true
+	}
+	if !contents["用户偏好中文回复"] || !contents["用户负责支付模块"] {
+		t.Fatalf("Agent 记忆内容缺失：%+v", agentMemories)
 	}
 	message, err := st.Messages.Get(ctx, "msg-1")
 	if err != nil {
@@ -59,18 +104,48 @@ func TestExtractAsyncWritesScopedMemories(t *testing.T) {
 		t.Fatal("抽取后没有标记消息")
 	}
 
-	// 关闭全局开关后不再抽取。
+	// 关闭全局开关只影响主助手的用户域，子 Agent 的专属记忆仍可写入且会去重。
 	if err := svc.SetMemoryEnabled("", false); err != nil {
 		t.Fatalf("disable memory: %v", err)
 	}
 	svc.ExtractAsync("agent-1", "conv-1", "msg-1", "另一个事实", "好的")
 	svc.wg.Wait()
-	if items := svc.Memories("user", ""); len(items) != 1 {
-		t.Fatalf("关闭后仍新增记忆：%+v", items)
+	if items := svc.Memories("user", ""); len(items) != 0 {
+		t.Fatalf("关闭后写入了用户记忆：%+v", items)
 	}
-	// 关闭全局开关只影响用户作用域，Agent 专属记忆仍可写入且会去重。
-	if items := svc.Memories("agent", "agent-1"); len(items) != 1 {
+	if items := svc.Memories("agent", "agent-1"); len(items) != 2 {
 		t.Fatalf("Agent 记忆重复写入：%+v", items)
+	}
+}
+
+func TestPromptBlockKeepsAgentMemorySeparate(t *testing.T) {
+	st := openTestStore(t, memoryTestStore(t), false)
+	ctx := context.Background()
+	svc := NewMemoryService(st, testLogger(), fastFake())
+	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
+
+	now := time.Now()
+	insert := func(id, scope, owner, content string) {
+		t.Helper()
+		if err := st.Memories.Insert(ctx, domain.Memory{
+			ID: id, Scope: domain.MemoryScope(scope), OwnerID: owner, Kind: domain.MemoryKindFact,
+			Content: content, ContentHash: hashContent(content), OccurredAt: now.UnixMilli(),
+			DayKey: dayKeyOf(now), Status: domain.MemoryActive, Pinned: true,
+			Confidence: 0.9, CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert memory %s: %v", id, err)
+		}
+	}
+	insert("m-user", "user", userMemoryOwnerID, "主助手记录的用户偏好")
+	insert("m-agent", "agent", "agent-1", "该 Agent 专有的项目背景")
+
+	mainBlock := svc.PromptBlock(mainAgentID, "")
+	if !strings.Contains(mainBlock, "主助手记录的用户偏好") || strings.Contains(mainBlock, "该 Agent 专有的项目背景") {
+		t.Fatalf("主助手记忆块串到 Agent 记忆：%s", mainBlock)
+	}
+	agentBlock := svc.PromptBlock("agent-1", "")
+	if !strings.Contains(agentBlock, "该 Agent 专有的项目背景") || strings.Contains(agentBlock, "主助手记录的用户偏好") {
+		t.Fatalf("Agent 记忆块串到用户全局记忆：%s", agentBlock)
 	}
 }
 

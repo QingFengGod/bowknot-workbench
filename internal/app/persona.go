@@ -64,6 +64,41 @@ func normalizePersona(p contract.AssistantPersona) contract.AssistantPersona {
 	return p
 }
 
+// parsePersonaText 解析 Agent 的人设文本。历史数据是自由文本，
+// 统一放进「其它要求」，保证旧记录仍能正常渲染。
+func parsePersonaText(raw string) contract.AssistantPersona {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return contract.AssistantPersona{}
+	}
+	if strings.HasPrefix(raw, "{") {
+		var persona contract.AssistantPersona
+		if err := json.Unmarshal([]byte(raw), &persona); err == nil {
+			return persona
+		}
+	}
+	return contract.AssistantPersona{Custom: raw}
+}
+
+// personaText 把结构化人设序列化为存储文本。
+func personaText(persona contract.AssistantPersona) string {
+	data, err := json.Marshal(persona)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// defaultAgentProfile 用名称与职责构造一份最小可用的独立人设。
+func defaultAgentProfile(name, description string) contract.AssistantPersona {
+	profile := contract.AssistantPersona{Name: strings.TrimSpace(name)}
+	description = strings.TrimSpace(description)
+	if description != "" && description != "暂无描述" {
+		profile.Role = description
+	}
+	return profile
+}
+
 // personaPrompt 把人设渲染成提示词片段，空字段不写进提示词。
 func personaPrompt(p contract.AssistantPersona) string {
 	lines := make([]string, 0, 6)
@@ -76,7 +111,7 @@ func personaPrompt(p contract.AssistantPersona) string {
 	add("性别", p.Gender)
 	add("年龄", p.Age)
 	add("性格", p.Personality)
-	add("角色或职能", p.Role)
+	add("角色或职责", p.Role)
 	add("对用户的称呼", p.UserName)
 	add("其它要求", p.Custom)
 	if len(lines) == 0 {

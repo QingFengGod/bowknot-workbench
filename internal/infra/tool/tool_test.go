@@ -149,7 +149,7 @@ func TestExecuteAppTool(t *testing.T) {
 	st := testStore(t)
 	svc := newTestService(t, st, nil)
 
-	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", `{"x":1}`)
+	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", `{"x":1}`)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestExecuteAppTool(t *testing.T) {
 func TestExecuteUnknownTool(t *testing.T) {
 	svc := newTestService(t, testStore(t), nil)
 
-	_, err := svc.Execute(context.Background(), "app:app-a/nope", "main-agent", "")
+	_, err := svc.Execute(context.Background(), "app:app-a/nope", "main-agent", "", "")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("错误 = %v, want ErrNotFound", err)
 	}
@@ -173,7 +173,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 func TestExecuteDisabledToolRejected(t *testing.T) {
 	svc := newTestService(t, testStore(t), nil)
 
-	_, err := svc.Execute(context.Background(), "app:app-a/t3", "main-agent", "")
+	_, err := svc.Execute(context.Background(), "app:app-a/t3", "main-agent", "", "")
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("错误 = %v, want ErrDisabled", err)
 	}
@@ -186,13 +186,13 @@ func TestPluginAuthorization(t *testing.T) {
 	st := testStore(t)
 	svc := newTestService(t, st, nil)
 
-	if _, err := svc.Execute(context.Background(), "plugin:plugin-p/p1", "agent-2", ""); !errors.Is(err, ErrNotAuthorized) {
+	if _, err := svc.Execute(context.Background(), "plugin:plugin-p/p1", "agent-2", "", ""); !errors.Is(err, ErrNotAuthorized) {
 		t.Fatalf("未授权调用未被拒绝：%v", err)
 	} else if !strings.Contains(err.Error(), "未被授权") {
 		t.Fatalf("错误信息不可读：%v", err)
 	}
 
-	if _, err := svc.Execute(context.Background(), "plugin:plugin-p/p1", "agent-1", ""); err != nil {
+	if _, err := svc.Execute(context.Background(), "plugin:plugin-p/p1", "agent-1", "", ""); err != nil {
 		t.Fatalf("已授权调用失败：%v", err)
 	}
 }
@@ -231,7 +231,7 @@ func TestDangerousToolRequiresApproval(t *testing.T) {
 
 	// 无审批入口：危险工具一律拒绝，且不应触达执行器。
 	svc := newTestService(t, st, func(o *Options) { o.Executor = executor })
-	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", ""); !IsCanceled(err) {
+	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", "", ""); !IsCanceled(err) {
 		t.Fatalf("无审批入口时应返回 canceled：%v", err)
 	}
 	if executor.count() != 0 {
@@ -241,7 +241,7 @@ func TestDangerousToolRequiresApproval(t *testing.T) {
 	// 审批拒绝：同样不执行。
 	denied := Approver(func(ctx context.Context, call Call) bool { return false })
 	svc = newTestService(t, st, func(o *Options) { o.Executor = executor; o.Approver = denied })
-	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", ""); !IsCanceled(err) {
+	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", "", ""); !IsCanceled(err) {
 		t.Fatalf("拒绝后应返回 canceled：%v", err)
 	}
 	if executor.count() != 0 {
@@ -251,13 +251,13 @@ func TestDangerousToolRequiresApproval(t *testing.T) {
 	// 审批通过后执行；普通工具不需要审批。
 	approved := Approver(func(ctx context.Context, call Call) bool { return true })
 	svc = newTestService(t, st, func(o *Options) { o.Executor = executor; o.Approver = approved })
-	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", ""); err != nil {
+	if _, err := svc.Execute(context.Background(), "app:app-a/t2", "main-agent", "", ""); err != nil {
 		t.Fatalf("确认后执行失败：%v", err)
 	}
 	if executor.count() != 1 {
 		t.Fatalf("确认后应执行一次，调用次数 = %d", executor.count())
 	}
-	if _, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", ""); err != nil {
+	if _, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", ""); err != nil {
 		t.Fatalf("普通工具不应触发审批：%v", err)
 	}
 }
@@ -270,7 +270,7 @@ func TestExecuteTimeout(t *testing.T) {
 	}}
 	svc := newTestService(t, st, func(o *Options) { o.Executor = executor; o.Timeout = 20 * time.Millisecond })
 
-	_, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "")
+	_, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", "")
 	if err == nil {
 		t.Fatal("执行超时应返回错误")
 	}
@@ -293,13 +293,13 @@ func TestExecutePanicDoesNotKillProcess(t *testing.T) {
 	}}
 	svc := newTestService(t, st, func(o *Options) { o.Executor = executor })
 
-	_, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "")
+	_, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", "")
 	if err == nil || !strings.Contains(err.Error(), "panic") {
 		t.Fatalf("panic 应转为错误：%v", err)
 	}
 
 	boom = false
-	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "")
+	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", "")
 	if err != nil || result.Content != "ok" {
 		t.Fatalf("panic 后进程应继续工作：%v, %q", err, result.Content)
 	}
@@ -312,7 +312,7 @@ func TestOutputTruncated(t *testing.T) {
 	}}
 	svc := newTestService(t, st, func(o *Options) { o.Executor = executor; o.MaxOutput = 50 })
 
-	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "")
+	result, err := svc.Execute(context.Background(), "app:app-a/t1", "main-agent", "", "")
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

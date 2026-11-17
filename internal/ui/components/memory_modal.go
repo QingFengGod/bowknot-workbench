@@ -66,11 +66,9 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 			*p.Open = false
 		}
 	}}, func() {
-		p.toggleRow(c, "允许长期记忆（全局）", "关闭后不再抽取和注入用户级记忆", p.State.GlobalEnabled, func(enabled bool) {
-			_ = p.Service.SetMemoryEnabled("", enabled)
-			p.invalidate()
-		})
 		if p.AgentID != "" {
+			// Agent 上下文只展示该 Agent 的开关与专属记忆；
+			// 用户全局记忆属于主助手，不在这里混入。
 			name := p.AgentName
 			if name == "" {
 				name = "当前 Agent"
@@ -79,7 +77,15 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 				_ = p.Service.SetMemoryEnabled(p.AgentID, enabled)
 				p.invalidate()
 			})
+			p.memorySection(c, "「"+name+"」的专属记忆", agentItems, 360,
+				"该 Agent 还没有专属记忆，和它聊几句后会自动出现在这里。")
+			return
 		}
+
+		p.toggleRow(c, "允许长期记忆（全局）", "关闭后不再抽取和注入用户级记忆", p.State.GlobalEnabled, func(enabled bool) {
+			_ = p.Service.SetMemoryEnabled("", enabled)
+			p.invalidate()
+		})
 
 		ui.Box(c).FillWidth().Height(1).Background(t.Border)
 
@@ -145,7 +151,11 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 			p.invalidate()
 		}
 	}}, func() {
-		ui.Text(c, "清空后所有长期记忆与摘要都会删除，且无法恢复。").FontSize(13)
+		message := "清空后所有长期记忆与摘要都会删除，且无法恢复。"
+		if p.AgentID != "" {
+			message = "清空会删除所有 Agent 与主助手的长期记忆和摘要，且无法恢复。"
+		}
+		ui.Text(c, message).FontSize(13)
 	})
 }
 
@@ -162,6 +172,21 @@ func (p MemoryModalProps) toggleRow(c *ui.Context, label, hint string, enabled b
 		if sw.Changed() {
 			onChange(value)
 		}
+	})
+}
+
+// memorySection 渲染一个记忆分区：标题与列表，为空时给出针对性提示。
+func (p MemoryModalProps) memorySection(c *ui.Context, title string, items []contract.MemoryItem, height float32, emptyHint string) {
+	t := c.Theme()
+	SectionTitle(c, title, fmt.Sprintf("%d 条", len(items)))
+	if len(items) == 0 {
+		ui.Column(c).FillWidth().Padding(16).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, emptyHint).FontSize(12).TextColor(t.TextMuted).TextAlign(ui.Center)
+		})
+		return
+	}
+	ui.Scroll(c).FillWidth().Height(height).Children(func() {
+		p.memoryList(c, items)
 	})
 }
 
@@ -267,13 +292,16 @@ func (p MemoryModalProps) refreshState() {
 		return
 	}
 
-	p.State.GlobalEnabled = p.Service.MemoryEnabled("")
-	p.State.UserItems = p.Service.Memories("user", "")
+	// Agent 上下文只加载专属记忆；用户全局记忆只在主助手的面板里出现。
+	p.State.UserItems = nil
 	p.State.AgentItems = nil
 	p.State.AgentEnabled = true
 	if p.AgentID != "" {
 		p.State.AgentEnabled = p.Service.MemoryEnabled(p.AgentID)
 		p.State.AgentItems = p.Service.Memories("agent", p.AgentID)
+	} else {
+		p.State.GlobalEnabled = p.Service.MemoryEnabled("")
+		p.State.UserItems = p.Service.Memories("user", "")
 	}
 	p.State.Loaded = true
 	p.State.RefreshedAt = time.Now()
