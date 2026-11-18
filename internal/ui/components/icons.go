@@ -35,6 +35,9 @@ const (
 	IconMoon      IconName = "moon"
 	IconMonitor   IconName = "monitor"
 	IconMemory    IconName = "memory"
+	IconArtifact  IconName = "artifact"
+	IconLink      IconName = "link"
+	IconAtSign    IconName = "atSign"
 )
 
 // 图标统一为 lucide 风格 SVG（24 viewBox、stroke 2），保持与原生 UI 一致的线条观感。
@@ -47,6 +50,7 @@ var icons = map[IconName]*ui.SVG{
 	IconPlugins:   icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M9 3v4M15 3v4"/><rect x="6" y="7" width="12" height="9" rx="2"/><path d="M12 16v4"/></g></svg>`),
 	IconAIGC:      icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="m18.892 5.297l1.254.418a.3.3 0 0 1 0 .57l-1.254.418a.3.3 0 0 0-.19.19l-.417 1.253a.3.3 0 0 1-.57 0l-.418-1.254a.3.3 0 0 0-.19-.19l-1.253-.417a.3.3 0 0 1 0-.57l1.254-.418a.3.3 0 0 0 .19-.19l.417-1.253a.3.3 0 0 1 .57 0l.418 1.254c.03.09.1.16.19.19m-9.698-.25c.258-.775 1.354-.774 1.612 0l1.537 4.61l4.61 1.537c.774.258.774 1.354 0 1.612l-4.61 1.537l-1.537 4.61c-.258.774-1.354.774-1.612 0l-1.537-4.61l-4.61-1.537c-.775-.258-.775-1.354 0-1.612l4.61-1.537zM10 7.372L8.977 10.44a.85.85 0 0 1-.537.537L5.372 12l3.068 1.023a.85.85 0 0 1 .537.537L10 16.628l1.023-3.068a.85.85 0 0 1 .537-.537L14.628 12l-3.068-1.023a.85.85 0 0 1-.537-.537zm10.146 10.343l-1.254-.418a.3.3 0 0 1-.19-.19l-.417-1.253a.3.3 0 0 0-.57 0l-.418 1.254a.3.3 0 0 1-.19.19l-1.253.417a.3.3 0 0 0 0 .57l1.254.418c.09.03.16.1.19.19l.417 1.253a.3.3 0 0 0 .57 0l.418-1.254a.3.3 0 0 1 .19-.19l1.253-.417a.3.3 0 0 0 0-.57" clip-rule="evenodd"/></svg>`),
 	IconPlus:      icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"><path d="M12 5v14M5 12h14"/></g></svg>`),
+	IconAtSign:    icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></g></svg>`),
 	IconTrash:     icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></g></svg>`),
 	IconClose:     icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></g></svg>`),
 	IconSearch:    icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></g></svg>`),
@@ -68,6 +72,8 @@ var icons = map[IconName]*ui.SVG{
 	IconMoon:      icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></g></svg>`),
 	IconMonitor:   icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></g></svg>`),
 	IconMemory:    icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M19 21l-7-5l-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></g></svg>`),
+	IconArtifact:  icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></g></svg>`),
+	IconLink:      icon(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></g></svg>`),
 }
 
 func icon(data string) *ui.SVG {

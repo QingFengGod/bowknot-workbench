@@ -23,9 +23,11 @@ type Hooks struct {
 // Page 是 agents 页的原生实现：左侧 Agent / 群聊列表，中间对话区，
 // 右侧为选中 Agent 的会话列表（群聊只有一个线程，不显示会话列）。
 type Page struct {
-	svc    contract.AgentService
-	memory contract.MemoryService
-	hooks  Hooks
+	svc       contract.AgentService
+	tasks     contract.TaskService
+	artifacts contract.ArtifactService
+	memory    contract.MemoryService
+	hooks     Hooks
 
 	agents     []contract.AgentInfo
 	groups     []contract.AgentGroup
@@ -49,6 +51,8 @@ type Page struct {
 	draft      string
 	sendErr    string
 	focusDraft bool
+	// mentionOpen 是群聊 @ 成员面板的开关，指针每帧指向同一地址。
+	mentionOpen bool
 
 	panelGroupOpen   map[string]*bool
 	sessionGroupOpen map[string]*bool
@@ -106,23 +110,37 @@ type Page struct {
 	approvalTool   string
 	approvalArgs   string
 
-	// 长期记忆面板及其编辑、清空状态。
+	// 长期记忆面板及其清空状态。
 	memoryOpen      bool
-	memoryEditOpen  bool
-	memoryEditID    string
-	memoryEditValue string
-	memoryEditErr   string
 	memoryClearOpen bool
 	memoryState     components.MemoryPanelState
+
+	// 任务线程：按会话 ID 索引，任务线程只读并显示状态标签。
+	tasksByThread    map[string]contract.TaskDetail
+	lastTaskRevision uint64
+	lastTaskRefresh  time.Time
+
+	// 产物预览：页面持有当前产物与一次性读取的预览数据。
+	viewer               components.ArtifactViewer
+	artifactOpen         bool
+	artifactDeleteOpen   bool
+	lastArtifactRevision uint64
+
+	// 群聊协作：版本号用于刷新成员发言，运行中定时轮询流式内容。
+	lastGroupRevision uint64
+	lastGroupRefresh  time.Time
 }
 
 // New 创建 agents 页。
-func New(svc contract.AgentService, memory contract.MemoryService, hooks Hooks) *Page {
+func New(svc contract.AgentService, tasks contract.TaskService, artifacts contract.ArtifactService, memory contract.MemoryService, hooks Hooks) *Page {
 	p := &Page{
-		svc:     svc,
-		memory:  memory,
-		hooks:   hooks,
-		streams: map[string]string{},
+		svc:           svc,
+		tasks:         tasks,
+		artifacts:     artifacts,
+		memory:        memory,
+		hooks:         hooks,
+		streams:       map[string]string{},
+		tasksByThread: map[string]contract.TaskDetail{},
 		panelGroupOpen: map[string]*bool{
 			"pinned": boolValue(true),
 			"agent":  boolValue(true),
@@ -146,6 +164,9 @@ func New(svc contract.AgentService, memory contract.MemoryService, hooks Hooks) 
 func (p *Page) View(c *ui.Context) {
 	t := c.Theme()
 
+	p.refreshTaskRevisions()
+	p.refreshArtifactRevisions()
+	p.refreshGroupRevisions()
 	p.reconcileScrollShift()
 	p.followEnd()
 
@@ -173,7 +194,11 @@ func (p *Page) View(c *ui.Context) {
 			}
 			p.chatHeader(c, progress)
 			p.messageList(c)
-			p.composer(c)
+			if p.activeTask() != nil {
+				p.taskReadOnlyBar(c)
+			} else {
+				p.composer(c)
+			}
 		})
 
 		if p.activeAgent() != nil && progress > 0.001 {
@@ -199,13 +224,51 @@ func (p *Page) View(c *ui.Context) {
 		State:     &p.memoryState,
 		AgentID:   memoryAgentID,
 		AgentName: memoryAgentName,
-		EditOpen:  &p.memoryEditOpen,
-		EditID:    &p.memoryEditID,
-		EditValue: &p.memoryEditValue,
-		EditErr:   &p.memoryEditErr,
 		ClearOpen: &p.memoryClearOpen,
 		OnChanged: p.reloadMessages,
 	})
+	p.artifactDrawer(c)
+}
+
+// openArtifact 打开产物预览抽屉。
+func (p *Page) openArtifact(id string) {
+	if p.artifacts == nil || id == "" {
+		return
+	}
+	p.viewer.Open(p.artifacts, id)
+	p.artifactOpen = true
+}
+
+func (p *Page) artifactDrawer(c *ui.Context) {
+	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
+		Open:   &p.artifactOpen,
+		Viewer: p.viewer,
+		OnDelete: func() {
+			p.artifactDeleteOpen = true
+		},
+	})
+	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
+		p.deleteArtifact(p.viewer.Detail.ID)
+	})
+}
+
+func (p *Page) deleteArtifact(id string) {
+	if p.artifacts == nil || id == "" {
+		return
+	}
+	go func() {
+		err := p.artifacts.DeleteArtifact(id)
+		p.update(func() {
+			if err != nil {
+				p.sendErr = err.Error()
+				return
+			}
+			p.artifactOpen = false
+			p.viewer = components.ArtifactViewer{}
+			p.reloadMessages()
+			p.reloadTasks()
+		})
+	}()
 }
 
 // emptyHint 是未选择任何条目时的占位，与助手页的空状态保持一致。
@@ -239,6 +302,9 @@ func (p *Page) chatHeader(c *ui.Context, progress float32) {
 				})
 				if p.streamingActive() {
 					components.Chip(c, "正在回复…", components.ToneBrand)
+				}
+				if task := p.activeTask(); task != nil {
+					components.TaskStatusChip(c, task.Status)
 				}
 			})
 
@@ -442,27 +508,181 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 		avatar = m.SenderAvatar
 	}
 
-	return components.MessageView(c, components.MessageViewProps{
-		Message:    m,
-		AvatarText: avatar,
-		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
-		OnStop:     func() { p.stop(p.conversationID()) },
-		OnRetry:    func() { p.regenerate(m.ID) },
-		OnDelete: func() {
-			p.deleteMessageID = m.ID
-			p.deleteMessageOpen = true
-		},
-		OnMemory: func() { p.memoryOpen = true },
+	// 任务线程是只读的工作记录，不提供停止 / 重答 / 删除入口。
+	task := p.activeTask()
+	if m.MessageType == "task_dispatch" {
+		t := c.Theme()
+		return ui.Column(c).
+			FillWidth().
+			Padding(10).
+			Gap(4).
+			Radius(theme.RadiusSM).
+			Background(t.SurfaceHover).
+			Children(func() {
+				ui.Text(c, "主助手派发任务").FontSize(11).Bold().TextColor(t.TextMuted)
+				ui.Text(c, m.Content).FontSize(12).TextColor(t.Text)
+			})
+	}
+	if task != nil {
+		avatar = firstRuneOr(task.AssigneeName, avatar)
+	}
+	var props components.MessageViewProps
+	if task != nil {
+		props = components.MessageViewProps{
+			Message:    m,
+			AvatarText: avatar,
+		}
+	} else {
+		showRetry := m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming
+		// 群聊回复依赖 @ 编排上下文，单条重答会失去成员协作，因此不提供入口。
+		if p.activeGroup() != nil {
+			showRetry = false
+		}
+		props = components.MessageViewProps{
+			Message:    m,
+			AvatarText: avatar,
+			ShowRetry:  showRetry,
+			OnStop:     func() { p.stop(p.conversationID()) },
+			OnRetry:    func() { p.regenerate(m.ID) },
+			OnDelete: func() {
+				p.deleteMessageID = m.ID
+				p.deleteMessageOpen = true
+			},
+			OnMemory: func() { p.memoryOpen = true },
+		}
+	}
+
+	if p.artifacts == nil || len(m.Artifacts) == 0 {
+		return components.MessageView(c, props)
+	}
+	return ui.Column(c).FillWidth().Gap(6).Children(func() {
+		components.MessageView(c, props)
+		components.ArtifactList(c, m.Artifacts, p.openArtifact)
 	})
+}
+
+// taskReadOnlyBar 替换输入区：任务线程是主助手派发的内部工作记录。
+func (p *Page) taskReadOnlyBar(c *ui.Context) {
+	t := c.Theme()
+
+	ui.Row(c).
+		FillWidth().
+		Shrink(0).
+		Padding(t.Space(3)).
+		Gap(8).
+		BorderWidth(1, 0, 0, 0).
+		BorderColor(t.Border).
+		AlignItems(ui.Center).
+		Children(func() {
+			components.Icon(c, components.IconMessage, 14).TextColor(t.TextMuted)
+			ui.Text(c, "任务线程由主助手派发，只读查看；需要继续沟通请打开该员工的直聊会话。").
+				FontSize(12).
+				TextColor(t.TextMuted)
+		})
+}
+
+// refreshTaskRevisions 在任务状态变化或运行中定时刷新任务线程。
+func (p *Page) refreshTaskRevisions() {
+	if p.tasks == nil {
+		return
+	}
+	revision := p.tasks.TaskRevision()
+	changed := revision != p.lastTaskRevision
+	if changed {
+		p.lastTaskRevision = revision
+		p.reloadSessions()
+		// 群聊里的任务汇报直接写回群会话，需要同步刷新消息。
+		if p.activeGroup() != nil && !p.streamingActive() {
+			p.reloadMessages()
+		}
+	}
+
+	task := p.activeTask()
+	if task == nil {
+		return
+	}
+	if changed || (task.Status == contract.TaskQueued || task.Status == contract.TaskRunning) && time.Since(p.lastTaskRefresh) > time.Second {
+		p.lastTaskRefresh = time.Now()
+		p.reloadMessages()
+	}
+}
+
+// refreshArtifactRevisions 在产物创建或删除后刷新当前会话。
+func (p *Page) refreshArtifactRevisions() {
+	if p.artifacts == nil {
+		return
+	}
+	revision := p.artifacts.ArtifactRevision()
+	if revision == p.lastArtifactRevision || p.streamingActive() {
+		return
+	}
+	p.lastArtifactRevision = revision
+	p.reloadMessages()
+}
+
+// refreshGroupRevisions 在群聊协作推进时刷新成员发言；运行中定时轮询流式内容。
+func (p *Page) refreshGroupRevisions() {
+	if p.svc == nil || p.activeGroup() == nil {
+		return
+	}
+	conversationID := p.conversationID()
+	revision := p.svc.GroupRevision()
+	busy := p.svc.GroupBusy(conversationID)
+	changed := revision != p.lastGroupRevision
+
+	if !changed && !(busy && time.Since(p.lastGroupRefresh) > 600*time.Millisecond) {
+		return
+	}
+	if changed {
+		p.lastGroupRevision = revision
+		p.reloadSessions()
+	}
+	p.lastGroupRefresh = time.Now()
+	// 主助手自己的流式回复由事件更新，其余成员发言靠轮询刷新。
+	if !p.streamingActive() || !busy {
+		p.reloadMessages()
+	}
+}
+
+// reloadTasks 建立任务线程与会话的映射，供状态标签与只读判断使用。
+func (p *Page) reloadTasks() {
+	p.tasksByThread = map[string]contract.TaskDetail{}
+	agent := p.activeAgent()
+	if p.tasks == nil || agent == nil {
+		return
+	}
+	for _, task := range p.tasks.Tasks(agent.ID, "", 100) {
+		if task.ThreadConversationID != "" {
+			p.tasksByThread[task.ThreadConversationID] = task
+		}
+	}
+}
+
+func (p *Page) activeTask() *contract.TaskDetail {
+	if p.activeSessionID == "" {
+		return nil
+	}
+	task, ok := p.tasksByThread[p.activeSessionID]
+	if !ok {
+		return nil
+	}
+	return &task
 }
 
 func (p *Page) composer(c *ui.Context) {
 	streaming := p.streamingActive()
+	placeholder := fmt.Sprintf("给 %s 发消息…", p.activeName())
+	if p.activeGroup() != nil {
+		placeholder = "给群成员发消息，输入 @ 可提及成员…"
+	}
+	if p.groupBusy() {
+		placeholder = "成员正在发言，请稍候…"
+	}
 
 	components.Composer(c, components.ComposerProps{
 		Draft:          &p.draft,
 		FocusRequested: &p.focusDraft,
-		Placeholder:    fmt.Sprintf("给 %s 发消息…", p.activeName()),
+		Placeholder:    placeholder,
 		Error:          p.sendErr,
 		Submit:         p.sendText,
 		Cancel: func() {
@@ -472,9 +692,20 @@ func (p *Page) composer(c *ui.Context) {
 		},
 		OnInput: func() {
 			p.sendErr = ""
+			// 在群聊里输入 @ 时直接弹出成员列表，省去点击按钮。
+			if p.activeGroup() != nil && mentionsOpenTrigger(p.draft) {
+				p.mentionOpen = true
+			}
 		},
 		Actions: func(c *ui.Context) {
 			t := c.Theme()
+
+			// 群聊时把 @ 成员按钮放在左侧，模型选择与发送仍在右侧。
+			if p.activeGroup() != nil && !p.groupBusy() {
+				ui.Box(c).Grow(1).Children(func() {
+					p.mentionButton(c)
+				})
+			}
 
 			p.modelPicker(c)
 
@@ -492,6 +723,105 @@ func (p *Page) composer(c *ui.Context) {
 			}
 		},
 	})
+}
+
+// mentionsOpenTrigger 判断草稿末尾是否刚输入了 @，用于自动打开成员列表。
+func mentionsOpenTrigger(draft string) bool {
+	trimmed := strings.TrimRight(draft, " \t\n")
+	return strings.HasSuffix(trimmed, "@") || strings.HasSuffix(trimmed, "＠")
+}
+
+// mentionButton 是群聊输入区的 @ 成员入口：点击或输入 @ 后选择成员，
+// 把「@名字 」插入草稿并重新聚焦输入框。
+func (p *Page) mentionButton(c *ui.Context) {
+	t := c.Theme()
+
+	trigger := ui.ButtonBase(c).
+		Height(28).
+		PaddingX(8).
+		Radius(theme.RadiusSM).
+		AlignItems(ui.Center).
+		Justify(ui.Center).
+		Gap(4)
+	if trigger.Hovered() {
+		trigger.Background(t.SurfaceHover)
+	}
+	trigger.Children(func() {
+		components.Icon(c, components.IconAtSign, 13).TextColor(t.TextMuted)
+		ui.Text(c, "提及成员").FontSize(12).TextColor(t.TextMuted)
+	})
+	if trigger.Clicked() {
+		p.mentionOpen = !p.mentionOpen
+	}
+
+	components.Popover(c, trigger, &p.mentionOpen, func() {
+		members := p.groupMemberInfos()
+		if len(members) == 0 {
+			ui.Text(c, "群里还没有成员").FontSize(12).TextColor(t.TextMuted)
+			return
+		}
+		for _, member := range members {
+			info := member
+			components.PopoverItem(c, components.PopoverItemProps{
+				Label: info.Name,
+				OnClick: func() {
+					p.insertMention(info.Name)
+				},
+				Content: func(c *ui.Context, selected bool) {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+						components.Icon(c, components.IconAtSign, 12).TextColor(c.Theme().TextMuted)
+						ui.Text(c, info.Name).FontSize(13).TextColor(c.Theme().Text).MaxLines(1)
+					})
+				},
+			})
+		}
+	})
+}
+
+// groupMemberInfos 按群成员顺序返回仍然存在的成员信息。
+func (p *Page) groupMemberInfos() []contract.AgentInfo {
+	group := p.activeGroup()
+	if group == nil {
+		return nil
+	}
+	index := make(map[string]contract.AgentInfo, len(p.agents))
+	for _, agent := range p.agents {
+		index[agent.ID] = agent
+	}
+	out := make([]contract.AgentInfo, 0, len(group.MemberIDs))
+	for _, id := range group.MemberIDs {
+		if agent, ok := index[id]; ok {
+			out = append(out, agent)
+		}
+	}
+	return out
+}
+
+// insertMention 把成员名追加到草稿末尾；如果正在输入 @ 名字，用选中成员替换这一段。
+func (p *Page) insertMention(name string) {
+	p.mentionOpen = false
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	draft := strings.TrimRight(p.draft, " \t\n")
+	runes := []rune(draft)
+	last := -1
+	for i := len(runes) - 1; i >= 0; i-- {
+		if runes[i] == '@' || runes[i] == '＠' {
+			last = i
+			break
+		}
+	}
+	if last >= 0 && !strings.ContainsAny(string(runes[last+1:]), " \t\n") {
+		draft = strings.TrimRight(string(runes[:last]), " \t\n")
+	}
+	if draft != "" {
+		draft += " "
+	}
+	p.draft = draft + "@" + name + " "
+	p.focusDraft = true
+	p.sendErr = ""
 }
 
 // modelPicker 把页面的模型列表适配成选择器组件的选项。
@@ -922,6 +1252,12 @@ func (p *Page) sessionRow(c *ui.Context, s contract.AgentSession) {
 		p.sessionMenuOpen[s.ID] = menuOpen
 	}
 
+	statusText, statusTone := "", components.ToneNeutral
+	if task, ok := p.tasksByThread[s.ID]; ok {
+		statusText = components.TaskStatusText(task.Status)
+		statusTone = components.TaskStatusTone(task.Status)
+	}
+
 	components.SessionItem(c, components.SessionItemProps{
 		Title:          s.Title,
 		Summary:        s.Summary,
@@ -929,6 +1265,8 @@ func (p *Page) sessionRow(c *ui.Context, s contract.AgentSession) {
 		Active:         s.ID == p.activeSessionID,
 		Pinned:         s.Pinned,
 		MenuOpen:       menuOpen,
+		Status:         statusText,
+		StatusTone:     statusTone,
 		DeleteDisabled: len(p.sessions) <= 1,
 		OnSelect:       func() { p.selectSession(s.ID) },
 		OnRename: func() {
@@ -959,10 +1297,10 @@ func (p *Page) deleteSessionModal(c *ui.Context) {
 		return
 	}
 
-	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
 	switch ui.AlertDialog(c, &p.sessionDeleteOpen, "删除会话",
-		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", title), "删除", "取消") {
-	case 0:
+		fmt.Sprintf("确定删除「%s」吗？删除后消息无法恢复。", title), "取消", "删除") {
+	case 1:
 		p.deleteSession(p.sessionDeleteID)
 		p.sessionDeleteID = ""
 	}
@@ -1104,7 +1442,11 @@ func (p *Page) send() {
 
 func (p *Page) sendText(text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || p.svc == nil || p.streamingActive() {
+	if text == "" || p.svc == nil || p.streamingActive() || p.activeTask() != nil {
+		return false
+	}
+	if p.groupBusy() {
+		p.sendErr = "群成员正在发言，请稍候再发送"
 		return false
 	}
 
@@ -1120,6 +1462,7 @@ func (p *Page) sendText(text string) bool {
 
 	p.draft = ""
 	p.sendErr = ""
+	p.mentionOpen = false
 	p.focusDraft = true
 	p.streams[conversationID] = messageID
 	p.reloadMessages()
@@ -1188,7 +1531,15 @@ func (p *Page) applyEvent(conversationID string, ev contract.ChatEvent) {
 				continue
 			}
 			found = true
-			if len(ev.Content) >= len(p.messages[i].Content) {
+			// Done 是最终快照，可能比流式内容短（例如清理了发言人前缀），
+			// 仍需覆盖；失败或停止时内容为空则保留已显示的部分。
+			if ev.Done {
+				if ev.Content != "" {
+					p.messages[i].Content = ev.Content
+				}
+				p.messages[i].Status = ev.Status
+				p.messages[i].Error = ev.Error
+			} else if len(ev.Content) >= len(p.messages[i].Content) {
 				p.messages[i].Content = ev.Content
 				p.messages[i].Status = ev.Status
 				p.messages[i].Error = ev.Error
@@ -1230,11 +1581,11 @@ func (p *Page) approvalModal(c *ui.Context) {
 		args = "无"
 	}
 	text := fmt.Sprintf("Agent 请求执行危险工具「%s」，参数：%s。是否允许本次执行？", p.approvalTool, args)
-	// 「拒绝」放在最后，回车默认不执行危险操作。
-	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "允许", "拒绝") {
-	case 0:
-		p.resolveApproval(true)
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
+	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "拒绝", "允许") {
 	case 1:
+		p.resolveApproval(true)
+	case 0:
 		p.resolveApproval(false)
 	}
 }
@@ -1251,6 +1602,44 @@ func (p *Page) resolveApproval(approved bool) {
 }
 
 // ---------- 数据加载 ----------
+
+// OpenAgentChat 从其它页面跳转到员工的直聊会话：
+// 优先复用最近的非任务会话，没有直聊会话时自动创建一个。
+func (p *Page) OpenAgentChat(agentID string) {
+	agentID = strings.TrimSpace(agentID)
+	if p.svc == nil || agentID == "" {
+		return
+	}
+
+	p.reloadAgents()
+	p.activeKey = "agent:" + agentID
+	p.sendErr = ""
+	p.follow = true
+	p.sessionsCollapsed = false
+	p.reloadSessions()
+
+	var preferred *contract.AgentSession
+	for i := range p.sessions {
+		// 任务线程只读，不作为跳转目标。
+		if _, isTask := p.tasksByThread[p.sessions[i].ID]; isTask {
+			continue
+		}
+		if preferred == nil || p.sessions[i].UpdatedAt > preferred.UpdatedAt {
+			preferred = &p.sessions[i]
+		}
+	}
+
+	if preferred == nil {
+		session := p.svc.CreateSession(agentID)
+		p.reloadSessions()
+		p.activeSessionID = session.ID
+	} else {
+		p.activeSessionID = preferred.ID
+	}
+	p.reloadMessages()
+	p.stickToBottom()
+	p.focusDraft = true
+}
 
 // OnShow 在切换到本页时刷新数据，主助手可能刚创建了 Agent
 // 或产生了新的委派会话。生成中不动消息列表，避免打断流式渲染。
@@ -1289,9 +1678,11 @@ func (p *Page) reloadSessions() {
 	agent := p.activeAgent()
 	if p.svc == nil || agent == nil {
 		p.sessions = nil
+		p.reloadTasks()
 		return
 	}
 	p.sessions = p.svc.Sessions(agent.ID)
+	p.reloadTasks()
 }
 
 func (p *Page) reloadMessages() {
@@ -1429,6 +1820,14 @@ func (p *Page) activeGroup() *contract.AgentGroup {
 	return nil
 }
 
+// groupBusy 表示当前群聊仍在协作轮次中，成员发言期间暂停发送。
+func (p *Page) groupBusy() bool {
+	if p.svc == nil || p.activeGroup() == nil {
+		return false
+	}
+	return p.svc.GroupBusy(p.conversationID())
+}
+
 func (p *Page) activeName() string {
 	if agent := p.activeAgent(); agent != nil {
 		return agent.Name
@@ -1440,16 +1839,41 @@ func (p *Page) activeName() string {
 }
 
 func (p *Page) activeDesc() string {
+	if p.activeTask() != nil {
+		return "任务线程 · 由主助手派发，只读"
+	}
 	if agent := p.activeAgent(); agent != nil {
-		if agent.ModelName != "" {
-			return agent.ModelName
+		desc := agent.ModelName
+		if desc == "" {
+			desc = "默认模型"
 		}
-		return "默认模型"
+		// 有后台任务时在标题下补充排队与运行中数量。
+		queued, running := p.taskCounts(agent.ID)
+		if queued > 0 || running > 0 {
+			desc += fmt.Sprintf(" · 运行中 %d · 排队 %d", running, queued)
+		}
+		return desc
 	}
 	if group := p.activeGroup(); group != nil {
 		return fmt.Sprintf("%d 个 Agent", len(group.MemberIDs)+1)
 	}
 	return ""
+}
+
+// taskCounts 统计当前员工排队中与运行中的任务数。
+func (p *Page) taskCounts(agentID string) (queued, running int) {
+	for _, task := range p.tasksByThread {
+		if task.AssigneeID != agentID {
+			continue
+		}
+		switch task.Status {
+		case contract.TaskQueued:
+			queued++
+		case contract.TaskRunning:
+			running++
+		}
+	}
+	return queued, running
 }
 
 func (p *Page) lastAssistantID() string {
@@ -1477,4 +1901,12 @@ func (p *Page) modelID() string {
 
 func boolValue(v bool) *bool {
 	return &v
+}
+
+func firstRuneOr(text, fallback string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return fallback
+	}
+	return string(runes[0])
 }

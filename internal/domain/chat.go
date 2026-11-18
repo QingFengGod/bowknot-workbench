@@ -40,6 +40,20 @@ const (
 	MessageFailed    MessageStatus = "failed"
 )
 
+// 发送者类型与消息类型：role 只有 user/assistant，身份与用途走独立列。
+const (
+	SenderUser  = "user"
+	SenderMain  = "main"
+	SenderAgent = "agent"
+
+	MessageTypeChat         = "chat"
+	MessageTypeTaskDispatch = "task_dispatch"
+	MessageTypeTaskReport   = "task_report"
+
+	VisibilityUser     = "user"
+	VisibilityInternal = "internal"
+)
+
 // Message 是一条会话消息。
 type Message struct {
 	ID             string
@@ -54,6 +68,12 @@ type Message struct {
 	Emotion        string
 	MemoryWritten  bool
 	CreatedAt      int64
+	// SenderKind / SenderID 标识发送者身份；MessageType 区分普通消息与任务消息。
+	SenderKind  string
+	SenderID    string
+	MessageType string
+	TaskID      string
+	Visibility  string
 }
 
 // RunStatus 是一次生成任务的状态。

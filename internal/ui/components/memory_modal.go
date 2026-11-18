@@ -3,7 +3,6 @@ package components
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -23,8 +22,9 @@ type MemoryPanelState struct {
 	AgentItems    []contract.MemoryItem
 }
 
-// MemoryModalProps 描述长期记忆面板及其子弹窗。
-// 所有开关与编辑状态由页面持有，组件只读写稳定指针。
+// MemoryModalProps 描述长期记忆面板及其清空确认。
+// 所有开关与数据缓存由页面持有，组件只读写稳定指针。
+// 单条记忆的增删改由模型通过记忆工具完成，面板只负责查看与整体清空。
 type MemoryModalProps struct {
 	Service contract.MemoryService
 	Open    *bool
@@ -34,20 +34,16 @@ type MemoryModalProps struct {
 	AgentID   string
 	AgentName string
 
-	EditOpen  *bool
-	EditID    *string
-	EditValue *string
-	EditErr   *string
 	ClearOpen *bool
 
 	// OnChanged 在记忆或开关变化后触发，页面可据此刷新消息的「已记住」标记。
 	OnChanged func()
 }
 
-// MemoryModal 是长期记忆管理弹窗：开关、列表、编辑、删除、置顶与清空。
+// MemoryModal 是长期记忆管理弹窗：开关、列表与整体清空。
 func MemoryModal(c *ui.Context, p MemoryModalProps) {
 	t := c.Theme()
-	if p.Service == nil || p.Open == nil || p.EditOpen == nil || p.ClearOpen == nil || p.State == nil {
+	if p.Service == nil || p.Open == nil || p.ClearOpen == nil || p.State == nil {
 		return
 	}
 
@@ -78,7 +74,7 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 				p.invalidate()
 			})
 			p.memorySection(c, "「"+name+"」的专属记忆", agentItems, 360,
-				"该 Agent 还没有专属记忆，和它聊几句后会自动出现在这里。")
+				"该 Agent 还没有专属记忆，聊到值得记住的事时它会主动记下来。")
 			return
 		}
 
@@ -92,7 +88,7 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 		if len(userItems) == 0 && len(agentItems) == 0 {
 			ui.Column(c).FillWidth().Padding(24).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "还没有长期记忆").FontSize(13).Bold()
-				ui.Text(c, "在对话里表达偏好或重要事实，这里会自动出现记忆。").FontSize(12).TextColor(t.TextMuted).TextAlign(ui.Center)
+				ui.Text(c, "和助手聊到偏好或重要事实时，它会主动记下来。").FontSize(12).TextColor(t.TextMuted).TextAlign(ui.Center)
 			})
 			return
 		}
@@ -109,33 +105,6 @@ func MemoryModal(c *ui.Context, p MemoryModalProps) {
 				}
 			})
 		})
-	})
-
-	// 编辑弹窗
-	Modal(c, ModalProps{Open: p.EditOpen, Title: "编辑记忆", Width: 480, Footer: func() {
-		cancel := Button(c, ButtonProps{Label: "取消", Variant: ButtonSecondary})
-		if cancel.Clicked() {
-			*p.EditOpen = false
-		}
-		save := Button(c, ButtonProps{Label: "保存", Variant: ButtonPrimary})
-		if save.Clicked() {
-			p.saveEdit()
-		}
-	}}, func() {
-		if p.EditValue == nil || p.EditID == nil {
-			return
-		}
-		ui.Text(c, "记忆内容").FontSize(12).Bold().TextColor(t.TextMuted)
-		input := ui.TextInput(c, p.EditValue).Placeholder("用一句话描述需要长期保留的事实").MaxLength(200)
-		if input.Changed() && p.EditErr != nil {
-			*p.EditErr = ""
-		}
-		if p.EditErr != nil && *p.EditErr != "" {
-			ui.Text(c, *p.EditErr).FontSize(12).TextColor(t.Danger)
-		}
-		if input.Submitted() {
-			p.saveEdit()
-		}
 	})
 
 	// 清空确认
@@ -217,68 +186,18 @@ func (p MemoryModalProps) memoryRow(c *ui.Context, item contract.MemoryItem) {
 		BorderWidth(1).
 		BorderColor(t.Border)
 	row.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, item.DayKey).FontSize(11).TextColor(t.TextMuted)
-				Chip(c, memoryKindLabel(item.Kind), ToneNeutral)
-				if item.Pinned {
-					Chip(c, "置顶", ToneBrand)
-				}
-			})
-
-			ui.Row(c).Gap(2).AlignItems(ui.Center).Children(func() {
-				pinLabel := "置顶"
-				if item.Pinned {
-					pinLabel = "取消置顶"
-				}
-				if TextButton(c, pinLabel, false).Clicked() {
-					_ = p.Service.SetPinned(item.ID, !item.Pinned)
-					p.invalidate()
-				}
-				if TextButton(c, "编辑", false).Clicked() {
-					if p.EditID != nil && p.EditValue != nil {
-						*p.EditID = item.ID
-						*p.EditValue = item.Content
-						if p.EditErr != nil {
-							*p.EditErr = ""
-						}
-						*p.EditOpen = true
-					}
-				}
-				if TextButton(c, "删除", true).Clicked() {
-					_ = p.Service.DeleteMemory(item.ID)
-					p.invalidate()
-				}
-			})
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, item.DayKey).FontSize(11).TextColor(t.TextMuted)
+			Chip(c, memoryKindLabel(item.Kind), ToneNeutral)
+			if item.Pinned {
+				Chip(c, "置顶", ToneBrand)
+			}
 		})
 
 		ui.Text(c, item.Content).FontSize(13).MaxLines(3)
 	})
 }
 
-func (p MemoryModalProps) saveEdit() {
-	if p.EditID == nil || p.EditValue == nil || p.EditOpen == nil {
-		return
-	}
-	content := strings.TrimSpace(*p.EditValue)
-	if content == "" {
-		if p.EditErr != nil {
-			*p.EditErr = "记忆内容不能为空"
-		}
-		return
-	}
-	if err := p.Service.UpdateMemory(*p.EditID, content); err != nil {
-		if p.EditErr != nil {
-			*p.EditErr = err.Error()
-		}
-		return
-	}
-	*p.EditOpen = false
-	p.invalidate()
-}
-
-// refreshState 在缓存失效时重新读取记忆与开关；
-// 面板打开期间每 2 秒刷新一次，确保异步抽取的新记忆能及时出现。
 func (p MemoryModalProps) refreshState() {
 	if p.State.AgentID != p.AgentID {
 		p.State.Loaded = false

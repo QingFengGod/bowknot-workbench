@@ -28,6 +28,7 @@ type AssistantService struct {
 	tools     *tool.Service
 	approvals *ApprovalHub
 	memory    *MemoryService
+	artifacts *ArtifactService
 	// models 是启动时从网关缓存的可选模型，UI 只从这里取列表。
 	models []contract.ChatModel
 	// greeted 保证每次应用启动只主动问候一次。
@@ -56,6 +57,11 @@ func NewAssistantService(st *store.Store, logger *slog.Logger, provider llm.Prov
 // SetMemory 注入长期记忆服务；为 nil 时关闭记忆注入与抽取。
 func (s *AssistantService) SetMemory(memory *MemoryService) {
 	s.memory = memory
+}
+
+// SetArtifacts 注入产物服务，用于消息读取时附加产物摘要。
+func (s *AssistantService) SetArtifacts(artifacts *ArtifactService) {
+	s.artifacts = artifacts
 }
 
 // SetModels 注入启动时解析到的真实模型列表。
@@ -99,7 +105,10 @@ func (s *AssistantService) Messages(sessionID string) []contract.ChatMessage {
 	if err != nil {
 		s.logger.Error("读取工具调用失败", "session", sessionID, "error", err)
 	}
-	return toContractMessages(items, sessionID, calls)
+	out := toContractMessages(items, sessionID, calls)
+	attachTaskBriefs(s.store, out)
+	attachArtifacts(s.store, s.artifacts, out)
+	return out
 }
 
 // MessagesPage 分页读取助手消息，beforeSeq <= 0 表示从最新开始。
@@ -114,7 +123,10 @@ func (s *AssistantService) MessagesPage(sessionID string, beforeSeq int64, limit
 	if err != nil {
 		s.logger.Error("读取工具调用失败", "session", sessionID, "error", err)
 	}
-	return contract.MessagePage{Items: toContractMessages(items, sessionID, calls), HasMore: hasMore}
+	out := toContractMessages(items, sessionID, calls)
+	attachTaskBriefs(s.store, out)
+	attachArtifacts(s.store, s.artifacts, out)
+	return contract.MessagePage{Items: out, HasMore: hasMore}
 }
 
 func (s *AssistantService) Models() []contract.ChatModel {
@@ -222,6 +234,10 @@ func (s *AssistantService) GreetOnLaunch() (string, string, <-chan contract.Chat
 			Role:           domain.RoleAssistant,
 			Status:         domain.MessageStreaming,
 			CreatedAt:      now,
+			SenderKind:     domain.SenderMain,
+			SenderID:       mainAgentID,
+			MessageType:    domain.MessageTypeChat,
+			Visibility:     domain.VisibilityUser,
 		}); err != nil {
 			return err
 		}
@@ -379,42 +395,6 @@ func (s *AssistantService) Revision() uint64 {
 	return s.revision.Load()
 }
 
-// AppendReport 追加一条已完成的助手消息，用于子 Agent 完成后的异步汇报。
-// 只允许写入主助手或群聊会话，不写子 Agent 的会话。
-func (s *AssistantService) AppendReport(conversationID, content string) error {
-	conversationID = strings.TrimSpace(conversationID)
-	content = strings.TrimSpace(content)
-	if conversationID == "" || content == "" {
-		return nil
-	}
-
-	ctx := context.Background()
-	conversation, err := s.store.Conversations.Get(ctx, conversationID)
-	if err != nil {
-		return conversationError(err, conversationID)
-	}
-	if conversation.Kind == domain.KindAgent {
-		return nil
-	}
-
-	now := time.Now().UnixMilli()
-	if _, err := s.store.Messages.Append(ctx, domain.Message{
-		ID:             id.New(),
-		ConversationID: conversationID,
-		Role:           domain.RoleAssistant,
-		Content:        content,
-		Status:         domain.MessageDone,
-		CreatedAt:      now,
-	}); err != nil {
-		return err
-	}
-	if err := s.store.Conversations.UpdateMeta(ctx, conversationID, conversation.Title, snippet(content, 40), conversation.Pinned, now); err != nil {
-		return err
-	}
-	s.revision.Add(1)
-	return nil
-}
-
 func (s *AssistantService) CreateSession() contract.ChatSession {
 	now := time.Now().UnixMilli()
 	item := domain.Conversation{
@@ -518,6 +498,9 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			Content:        text,
 			Status:         domain.MessageDone,
 			CreatedAt:      now,
+			SenderKind:     domain.SenderUser,
+			MessageType:    domain.MessageTypeChat,
+			Visibility:     domain.VisibilityUser,
 		}); err != nil {
 			return err
 		}
@@ -529,6 +512,9 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			Content:        text,
 			Status:         domain.MessageDone,
 			CreatedAt:      now,
+			SenderKind:     domain.SenderUser,
+			MessageType:    domain.MessageTypeChat,
+			Visibility:     domain.VisibilityUser,
 		})
 		if _, err := tx.Messages.Append(ctx, domain.Message{
 			ID:             messageID,
@@ -536,6 +522,10 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			Role:           domain.RoleAssistant,
 			Status:         domain.MessageStreaming,
 			CreatedAt:      now,
+			SenderKind:     domain.SenderMain,
+			SenderID:       mainAgentID,
+			MessageType:    domain.MessageTypeChat,
+			Visibility:     domain.VisibilityUser,
 		}); err != nil {
 			return err
 		}
@@ -561,6 +551,7 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			system = system + "\n\n" + block
 		}
 	}
+	memoryWritten := false
 	go runGeneration(genStream{
 		store:     s.store,
 		logger:    s.logger,
@@ -580,12 +571,12 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			System:   system,
 			Messages: toLLMMessages(history),
 		},
-		events:    events,
-		slot:      slot,
-		tools:     s.tools,
-		approvals: s.approvals,
-		agentID:   mainAgentID,
-		memory:    s.memory,
+		events:        events,
+		slot:          slot,
+		tools:         s.tools,
+		approvals:     s.approvals,
+		agentID:       mainAgentID,
+		memoryWritten: &memoryWritten,
 	})
 	return messageID, events, nil
 }
@@ -625,6 +616,10 @@ func (s *AssistantService) AutoReply(sessionID string) (string, <-chan contract.
 			Role:           domain.RoleAssistant,
 			Status:         domain.MessageStreaming,
 			CreatedAt:      time.Now().UnixMilli(),
+			SenderKind:     domain.SenderMain,
+			SenderID:       mainAgentID,
+			MessageType:    domain.MessageTypeChat,
+			Visibility:     domain.VisibilityUser,
 		}); err != nil {
 			return err
 		}
@@ -650,6 +645,7 @@ func (s *AssistantService) AutoReply(sessionID string) (string, <-chan contract.
 			system = system + "\n\n" + block
 		}
 	}
+	memoryWritten := false
 	go runGeneration(genStream{
 		store:     s.store,
 		logger:    s.logger,
@@ -668,12 +664,12 @@ func (s *AssistantService) AutoReply(sessionID string) (string, <-chan contract.
 			System:   system,
 			Messages: toLLMMessages(history),
 		},
-		events:    events,
-		slot:      slot,
-		tools:     s.tools,
-		approvals: s.approvals,
-		agentID:   mainAgentID,
-		memory:    s.memory,
+		events:        events,
+		slot:          slot,
+		tools:         s.tools,
+		approvals:     s.approvals,
+		agentID:       mainAgentID,
+		memoryWritten: &memoryWritten,
 	})
 	return messageID, events, true
 }
@@ -748,6 +744,7 @@ func (s *AssistantService) Regenerate(sessionID, messageID string) (<-chan contr
 			system = system + "\n\n" + block
 		}
 	}
+	memoryWritten := false
 	go runGeneration(genStream{
 		store:     s.store,
 		logger:    s.logger,
@@ -760,12 +757,12 @@ func (s *AssistantService) Regenerate(sessionID, messageID string) (<-chan contr
 			System:   system,
 			Messages: toLLMMessages(history),
 		},
-		events:    events,
-		slot:      slot,
-		tools:     s.tools,
-		approvals: s.approvals,
-		agentID:   mainAgentID,
-		memory:    s.memory,
+		events:        events,
+		slot:          slot,
+		tools:         s.tools,
+		approvals:     s.approvals,
+		agentID:       mainAgentID,
+		memoryWritten: &memoryWritten,
 	})
 	return events, nil
 }

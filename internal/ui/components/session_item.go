@@ -17,6 +17,9 @@ type SessionItemProps struct {
 	Pinned    bool
 	// MenuOpen 是「更多」菜单的开关，由调用方按行持有并保证每帧指向同一地址。
 	MenuOpen *bool
+	// Status 非空时在标题后显示状态标签，用于任务线程。
+	Status     string
+	StatusTone Tone
 	// DeleteDisabled 为 true 时菜单里的删除项置灰。
 	DeleteDisabled bool
 	OnSelect       func()
@@ -49,6 +52,9 @@ func SessionItem(c *ui.Context, p SessionItemProps) {
 	row.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Text(c, p.Title).FontSize(13).Bold().MaxLines(1).Grow(1)
+			if p.Status != "" {
+				Chip(c, p.Status, p.StatusTone)
+			}
 			ui.Text(c, format.Relative(p.UpdatedAt)).FontSize(11).TextColor(t.TextMuted)
 
 			more := ui.ButtonBase(c).

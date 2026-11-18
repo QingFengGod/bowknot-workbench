@@ -83,6 +83,20 @@ type Result struct {
 	Content string
 }
 
+type messageIDKey struct{}
+
+// WithMessageID 把当前生成的助手消息 ID 写入执行上下文。
+// 记忆等需要溯源的工具据此记录来源消息，不必扩展 Execute 的参数列表。
+func WithMessageID(ctx context.Context, messageID string) context.Context {
+	return context.WithValue(ctx, messageIDKey{}, messageID)
+}
+
+// MessageID 读取执行上下文中的消息 ID，未设置时返回空字符串。
+func MessageID(ctx context.Context) string {
+	value, _ := ctx.Value(messageIDKey{}).(string)
+	return value
+}
+
 // Executor 是工具执行器接口。
 type Executor interface {
 	Execute(ctx context.Context, call Call) (Result, error)

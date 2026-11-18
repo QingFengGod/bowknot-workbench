@@ -64,3 +64,19 @@ func Size(bytes int64) string {
 		return fmt.Sprintf("%.1f MB", float64(bytes)/1024/1024)
 	}
 }
+
+// Duration 把毫秒格式化为紧凑耗时，例如「12 秒」「1 分 20 秒」。
+func Duration(ms int64) string {
+	if ms <= 0 {
+		return "-"
+	}
+	seconds := ms / 1000
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("%d 秒", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("%d 分 %d 秒", seconds/60, seconds%60)
+	default:
+		return fmt.Sprintf("%d 小时 %d 分", seconds/3600, seconds%3600/60)
+	}
+}

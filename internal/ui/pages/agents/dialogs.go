@@ -368,9 +368,9 @@ func (p *Page) deleteModal(c *ui.Context) {
 			fmt.Sprintf("确定解散「%s」吗？解散后群聊消息将无法恢复。", item.name), "解散"
 	}
 
-	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
-	switch ui.AlertDialog(c, &p.deleteOpen, title, content, okLabel, "取消") {
-	case 0:
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
+	switch ui.AlertDialog(c, &p.deleteOpen, title, content, "取消", okLabel) {
+	case 1:
 		p.removeItem(*item)
 	}
 }
@@ -402,8 +402,8 @@ func (p *Page) removeItem(item panelItem) {
 
 // deleteMessageModal 确认删除单条消息。
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
-	if ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "删除", "取消") != 0 {
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
+	if ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") != 1 {
 		return
 	}
 

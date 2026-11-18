@@ -29,54 +29,34 @@ const (
 	memoryBudgetRunes = 2000
 	// memoryMaxItems 是单次注入的记忆条数上限。
 	memoryMaxItems = 12
-	// memoryRecentDays 是「最近记忆」的时间窗口。
-	memoryRecentDays = 7
-	// memoryExtractLimit 是每轮抽取写入的记忆条数上限。
-	memoryExtractLimit = 3
+	// memoryRecentDays 是「最近记忆」的时间窗口，用于自动注入与检索加权。
+	memoryRecentDays = 30
 	// memoryContentLimit 是单条记忆的字符上限。
 	memoryContentLimit = 200
-	// memoryQueryTimeout 是抽取与摘要的单次模型调用超时。
-	memoryQueryTimeout = 20 * time.Second
-	// memoryDigestTimeout 是按需生成日摘要的超时，失败不阻塞回复。
-	memoryDigestTimeout = 10 * time.Second
-	// memoryDigestDayLimit 是时间线索出现时最多展开的摘要周期数。
-	memoryDigestDayLimit = 3
-	// memoryDigestGenLimit 是单次检索最多补建的摘要数量。
-	memoryDigestGenLimit = 3
+	// memoryDigestTimeout 是单次摘要模型调用的超时。
+	memoryDigestTimeout = 20 * time.Second
+	// memoryDigestWeekWindow 是后台摘要回看的周数。
+	memoryDigestWeekWindow = 8
+	// memoryDigestMatchLimit 是单次检索最多展开的周期摘要数量。
+	memoryDigestMatchLimit = 3
+	// memoryDigestGenLimit 是单轮后台任务最多补建的摘要数量。
+	memoryDigestGenLimit = 4
+	// memoryDigestInterval 是后台摘要任务的执行间隔；
+	// 已完成周在内容未变化时不会重复调用模型，实际频率接近每周一次。
+	memoryDigestInterval = 6 * time.Hour
+	// memorySearchDefaultLimit / memorySearchMaxLimit 控制检索返回条数。
+	memorySearchDefaultLimit = 8
+	memorySearchMaxLimit     = 20
 
 	userMemoryOwnerID = assistantOwnerID
 	memoryGlobalKey   = "memory.enabled"
 	memoryAgentPrefix = "memory.agent."
 )
 
-const memoryExtractSystemPrompt = `你是 bowknot-workbench 的长期记忆抽取器。
-从用户消息里提取值得长期保留的原子事实，只记录你觉得应该记忆的事，例如用户偏好，对你说的有趣的事，难过的事。
-输出 JSON 数组，最多 3 条；没有可记录内容时输出 []。
-每个元素的字段：
-- scope: "user"（跨 Agent 的全局偏好）或 "agent"（当前 Agent 专属）
-- kind: "profile" | "preference" | "fact" | "decision" | "event"
-- content: 以你第一人称写成的完整陈述，不超过 200 字；不要以「用户」作主语，例如写「主人今天丢了100元」而不是「用户今天丢了100元」;「主人今天夸奖了我」而不是「用户今天夸奖了我」
-- keywords: 3-8 个关键词组成的字符串数组
-- occurred_at: RFC3339 时间，缺省用当前时间
-- confidence: 0 到 1
-- supersedes_id: 用户明确纠正旧信息时填写旧记忆 ID，否则空字符串
-不要输出 JSON 以外的任何内容。`
-
 const memoryDigestSystemPrompt = `你是 bowknot-workbench 的记忆摘要器。
-把给定的一组原子记忆压缩成 100-200 字的中文摘要，并给出 3-8 个关键词。
-只压缩已有内容，不引入新事实。
+把给定的一周原子记忆压缩成 150-300 字的中文摘要，并给出 3-8 个关键词。
+摘要要保留可以据此查找原文的时间与主题线索，只压缩已有内容，不引入新事实。
 只输出 JSON：{"summary":"...","keywords":["..."]}。`
-
-// memoryCandidate 是模型抽取返回的一条候选记忆。
-type memoryCandidate struct {
-	Scope        string   `json:"scope"`
-	Kind         string   `json:"kind"`
-	Content      string   `json:"content"`
-	Keywords     []string `json:"keywords"`
-	OccurredAt   string   `json:"occurred_at"`
-	Confidence   float64  `json:"confidence"`
-	SupersedesID string   `json:"supersedes_id"`
-}
 
 type memoryOwner struct {
 	scope domain.MemoryScope
@@ -91,8 +71,16 @@ type scoredMemory struct {
 	recent  bool
 }
 
-// MemoryService 负责长期记忆的写入、检索、摘要与用户管理。
-// 抽取与摘要异步执行，失败只记录日志，不影响聊天主链路。
+// weekPeriod 是一个自然周（周一到周日）的日期范围。
+type weekPeriod struct {
+	start   string
+	end     string
+	startMs int64
+	endMs   int64
+}
+
+// MemoryService 负责长期记忆的写入、检索、修改、删除与周期摘要。
+// 写入与检索由模型通过内置工具触发；后台任务只负责维护周期摘要索引。
 type MemoryService struct {
 	store    *store.Store
 	logger   *slog.Logger
@@ -124,7 +112,30 @@ func NewMemoryService(st *store.Store, logger *slog.Logger, provider llm.Provide
 	}
 }
 
-// Shutdown 取消进行中的抽取与摘要任务，避免退出时写库。
+// Start 启动周期摘要任务：启动时补一次，之后按固定间隔检查。
+// 由 main 在装配完成后调用，测试可以只调用 ensureDigests 而不启动循环。
+func (m *MemoryService) Start() {
+	if m == nil {
+		return
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.ensureDigests()
+		ticker := time.NewTicker(memoryDigestInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.ctx.Done():
+				return
+			case <-ticker.C:
+				m.ensureDigests()
+			}
+		}
+	}()
+}
+
+// Shutdown 取消进行中的摘要任务与检索记账，避免退出时写库。
 func (m *MemoryService) Shutdown(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -197,23 +208,191 @@ func (m *MemoryService) Memories(scope, ownerID string) []contract.MemoryItem {
 	return out
 }
 
-func (m *MemoryService) SetPinned(memoryID string, pinned bool) error {
+// Remember 写入一条记忆；归属由调用方 Agent 推导，不接受模型指定作用域。
+func (m *MemoryService) Remember(ctx context.Context, agentID, conversationID, messageID, content, kind string, occurredAt time.Time) (contract.MemoryItem, error) {
 	if m == nil {
-		return errors.New("记忆服务未启用")
+		return contract.MemoryItem{}, errors.New("记忆服务未启用")
 	}
-	ctx := context.Background()
-	item, err := m.store.Memories.Get(ctx, memoryID)
+	owner := memoryOwnerFor(agentID)
+	if !m.MemoryEnabled(memoryEnabledOwner(agentID)) {
+		return contract.MemoryItem{}, errors.New("长期记忆已关闭，请先在记忆面板开启")
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return contract.MemoryItem{}, errors.New("记忆内容不能为空")
+	}
+	if containsSensitive(content) {
+		return contract.MemoryItem{}, errors.New("记忆包含敏感信息，已拒绝写入")
+	}
+	content = truncateRunes(content, memoryContentLimit)
+
+	now := m.now()
+	occurred := clampOccurredAt(occurredAt, now)
+	item := domain.Memory{
+		ID:                   id.New(),
+		Scope:                owner.scope,
+		OwnerID:              owner.owner,
+		Kind:                 normalizeMemoryKind(kind),
+		Content:              content,
+		ContentHash:          hashContent(content),
+		Keywords:             strings.Join(deriveKeywords(content), " "),
+		OccurredAt:           occurred.UnixMilli(),
+		DayKey:               dayKeyOf(occurred),
+		SourceConversationID: conversationID,
+		SourceMessageID:      messageID,
+		SourceRole:           "assistant",
+		Confidence:           0.7,
+		Status:               domain.MemoryActive,
+		CreatedAt:            now.UnixMilli(),
+		UpdatedAt:            now.UnixMilli(),
+	}
+	if item.Kind == domain.MemoryKindEvent {
+		item.Importance = 1
+	}
+
+	saved, err := m.save(ctx, item)
 	if err != nil {
-		return memoryError(err, memoryID)
+		return contract.MemoryItem{}, fmt.Errorf("写入记忆失败：%w", err)
 	}
-	if err := m.store.Memories.SetPinned(ctx, memoryID, pinned, m.now().UnixMilli()); err != nil {
-		return memoryError(err, memoryID)
-	}
-	m.markDigestDirty(item.Scope, item.OwnerID, item.DayKey)
-	return nil
+	return toMemoryItem(saved), nil
 }
 
-func (m *MemoryService) UpdateMemory(memoryID, content string) error {
+// Search 检索记忆：先匹配周期摘要定位周，再按日期范围取原文；
+// 摘要尚未覆盖时退回全量关键词扫描。
+func (m *MemoryService) Search(ctx context.Context, agentID, query, fromDay, toDay string, limit int) []contract.MemoryItem {
+	if m == nil {
+		return nil
+	}
+	memOwner := memoryOwnerFor(agentID)
+	scope, ownerID := memOwner.scope, memOwner.owner
+	if !m.MemoryEnabled(memoryEnabledOwner(agentID)) {
+		return nil
+	}
+	if limit <= 0 {
+		limit = memorySearchDefaultLimit
+	}
+	if limit > memorySearchMaxLimit {
+		limit = memorySearchMaxLimit
+	}
+
+	now := m.now()
+	recentSince := now.AddDate(0, 0, -memoryRecentDays).UnixMilli()
+	tokens := questionKeywords(query)
+
+	seen := make(map[string]bool)
+	items := make([]domain.Memory, 0, 16)
+	add := func(list []domain.Memory) {
+		for _, item := range list {
+			if seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			items = append(items, item)
+		}
+	}
+
+	fromMs, hasFrom := parseDayStart(fromDay)
+	toMs, hasTo := parseDayEnd(toDay)
+	hasRange := hasFrom || hasTo
+	switch {
+	case hasRange:
+		if !hasFrom {
+			fromMs = 0
+		}
+		if !hasTo {
+			toMs = math.MaxInt64
+		}
+		if list, err := m.store.Memories.ListByRange(ctx, scope, ownerID, fromMs, toMs); err == nil {
+			add(list)
+		} else {
+			m.logger.Warn("按日期检索记忆失败", "error", err)
+		}
+	case len(tokens) > 0:
+		// 先用周期摘要找出相关的周，再取这一周的原子记忆。
+		digests, err := m.store.MemoryDigests.List(ctx, scope, ownerID, domain.DigestWeek, 52)
+		if err != nil {
+			m.logger.Warn("读取记忆摘要失败", "error", err)
+		}
+		matched := 0
+		for _, digest := range digests {
+			if matched >= memoryDigestMatchLimit {
+				break
+			}
+			if !digestMatches(digest, tokens) {
+				continue
+			}
+			matched++
+			startMs, okFrom := parseDayStart(digest.PeriodStart)
+			endMs, okTo := parseDayEnd(digest.PeriodEnd)
+			if !okFrom || !okTo {
+				continue
+			}
+			list, err := m.store.Memories.ListByRange(ctx, scope, ownerID, startMs, endMs)
+			if err != nil {
+				m.logger.Warn("读取周期记忆失败", "period", digest.PeriodStart, "error", err)
+				continue
+			}
+			add(list)
+		}
+		if len(items) == 0 {
+			// 摘要还没生成时按关键词扫描全部 active 记忆。
+			all, err := m.store.Memories.ListActive(ctx, scope, ownerID, 0)
+			if err != nil {
+				m.logger.Warn("扫描记忆失败", "error", err)
+			}
+			for _, item := range all {
+				if memoryMatches(item, tokens) {
+					add([]domain.Memory{item})
+				}
+			}
+		}
+	}
+
+	// 没有显式日期范围时补充最近窗口，保证能回答「最近发生了什么」。
+	if !hasRange {
+		recent, err := m.store.Memories.ListActive(ctx, scope, ownerID, 0)
+		if err != nil {
+			m.logger.Warn("读取最近记忆失败", "error", err)
+		} else {
+			for _, item := range recent {
+				if item.UpdatedAt >= recentSince {
+					add([]domain.Memory{item})
+				}
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		scoreI := scoreSearchMemory(items[i], tokens, recentSince)
+		scoreJ := scoreSearchMemory(items[j], tokens, recentSince)
+		if scoreI == scoreJ {
+			return items[i].OccurredAt > items[j].OccurredAt
+		}
+		return scoreI > scoreJ
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	usedIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		usedIDs = append(usedIDs, item.ID)
+	}
+	m.markUsedAsync(usedIDs)
+
+	out := make([]contract.MemoryItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, toMemoryItem(item))
+	}
+	return out
+}
+
+// UpdateMemory 修改一条属于当前 Agent 的记忆。
+func (m *MemoryService) UpdateMemory(ctx context.Context, agentID, memoryID, content string) error {
 	if m == nil {
 		return errors.New("记忆服务未启用")
 	}
@@ -221,12 +400,17 @@ func (m *MemoryService) UpdateMemory(memoryID, content string) error {
 	if content == "" {
 		return errors.New("记忆内容不能为空")
 	}
+	if containsSensitive(content) {
+		return errors.New("记忆包含敏感信息，已拒绝写入")
+	}
 	content = truncateRunes(content, memoryContentLimit)
 
-	ctx := context.Background()
 	item, err := m.store.Memories.Get(ctx, memoryID)
 	if err != nil {
 		return memoryError(err, memoryID)
+	}
+	if !m.ownsMemory(agentID, item) {
+		return errors.New("无权修改其他 Agent 的记忆")
 	}
 	item.Content = content
 	item.ContentHash = hashContent(content)
@@ -238,23 +422,26 @@ func (m *MemoryService) UpdateMemory(memoryID, content string) error {
 		}
 		return memoryError(err, memoryID)
 	}
-	m.markDigestDirty(item.Scope, item.OwnerID, item.DayKey)
+	m.markWeekDigestDirty(item.Scope, item.OwnerID, item.DayKey)
 	return nil
 }
 
-func (m *MemoryService) DeleteMemory(memoryID string) error {
+// DeleteMemory 删除一条属于当前 Agent 的记忆。
+func (m *MemoryService) DeleteMemory(ctx context.Context, agentID, memoryID string) error {
 	if m == nil {
 		return errors.New("记忆服务未启用")
 	}
-	ctx := context.Background()
 	item, err := m.store.Memories.Get(ctx, memoryID)
 	if err != nil {
 		return memoryError(err, memoryID)
 	}
+	if !m.ownsMemory(agentID, item) {
+		return errors.New("无权删除其他 Agent 的记忆")
+	}
 	if err := m.store.Memories.Delete(ctx, memoryID); err != nil {
 		return memoryError(err, memoryID)
 	}
-	m.markDigestDirty(item.Scope, item.OwnerID, item.DayKey)
+	m.markWeekDigestDirty(item.Scope, item.OwnerID, item.DayKey)
 	return nil
 }
 
@@ -272,197 +459,47 @@ func (m *MemoryService) ClearMemories() error {
 	return nil
 }
 
-// ExtractAsync 在回复完成后异步抽取记忆，不阻塞事件通道关闭。
-func (m *MemoryService) ExtractAsync(agentID, conversationID, messageID, userText, replyText string) {
-	if m == nil || strings.TrimSpace(userText) == "" {
-		return
-	}
-	globalOn := m.MemoryEnabled("")
-	agentOn := agentID != "" && agentID != mainAgentID && m.MemoryEnabled(agentID)
-	if !globalOn && !agentOn {
-		return
-	}
-
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		ctx, cancel := context.WithTimeout(m.ctx, memoryQueryTimeout)
-		defer cancel()
-		if err := m.extract(ctx, agentID, conversationID, messageID, userText, replyText); err != nil {
-			m.logger.Warn("记忆抽取失败，跳过本轮", "conversation", conversationID, "error", err)
-		}
-	}()
-}
-
-func (m *MemoryService) extract(ctx context.Context, agentID, conversationID, messageID, userText, replyText string) error {
-	now := m.now()
-	req := llm.ChatRequest{
-		System: fmt.Sprintf("%s\n当前时间：%s。occurred_at 只能基于当前时间推算；对话里没有明确日期时，直接使用当前时间，严禁编造日期。",
-			memoryExtractSystemPrompt, now.Format("2006-01-02 15:04:05")),
-		Messages: []llm.Message{{
-			Role:    "user",
-			Content: fmt.Sprintf("用户消息：%s\n助手回复：%s", userText, replyText),
-		}},
-	}
-	text, err := m.provider.Complete(ctx, req)
-	if err != nil {
-		return err
-	}
-	candidates, err := parseMemoryCandidates(text)
-	if err != nil {
-		return err
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	written := 0
-	for _, candidate := range candidates {
-		if written >= memoryExtractLimit {
-			break
-		}
-		item, ok := m.candidateToMemory(candidate, agentID, conversationID, messageID, now)
-		if !ok {
-			continue
-		}
-		ok, err := m.save(ctx, item)
-		if err != nil {
-			return err
-		}
-		if ok {
-			written++
-		}
-	}
-	if written == 0 {
-		return nil
-	}
-	if err := m.store.Messages.SetMemoryWritten(ctx, messageID, true); err != nil && !errors.Is(err, store.ErrNotFound) {
-		m.logger.Warn("更新消息记忆标记失败", "message", messageID, "error", err)
-	}
-	return nil
-}
-
-// candidateToMemory 校验并规范化一条候选记忆，命中敏感信息或开关关闭时跳过。
-// 记忆归属由会话所属 Agent 决定：主助手写入用户全局域，子 Agent 写入自己的专属域，
-// 不采用模型给出的 scope，避免两套记忆互相污染。
-func (m *MemoryService) candidateToMemory(candidate memoryCandidate, agentID, conversationID, messageID string, now time.Time) (domain.Memory, bool) {
-	scope := domain.MemoryScopeUser
-	owner := userMemoryOwnerID
-	if agentID != "" && agentID != mainAgentID {
-		scope = domain.MemoryScopeAgent
-		owner = agentID
-	}
-	if scope == domain.MemoryScopeUser && !m.MemoryEnabled("") {
-		return domain.Memory{}, false
-	}
-	if scope == domain.MemoryScopeAgent && !m.MemoryEnabled(owner) {
-		return domain.Memory{}, false
-	}
-
-	content := strings.TrimSpace(candidate.Content)
-	if content == "" || containsSensitive(content) {
-		return domain.Memory{}, false
-	}
-	content = truncateRunes(content, memoryContentLimit)
-
-	kind := domain.MemoryKind(strings.TrimSpace(candidate.Kind))
-	switch kind {
-	case domain.MemoryKindProfile, domain.MemoryKindPreference, domain.MemoryKindFact,
-		domain.MemoryKindDecision, domain.MemoryKindEvent:
-	default:
-		kind = domain.MemoryKindPreference
-	}
-
-	occurredAt := now
-	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(candidate.OccurredAt)); err == nil {
-		// 模型偶尔会编造几个月前或未来的日期；只接受近期的时间，其余回退到当前时间。
-		if !parsed.Before(now.Add(-7*24*time.Hour)) && !parsed.After(now.Add(24*time.Hour)) {
-			occurredAt = parsed
-		}
-	}
-	confidence := candidate.Confidence
-	if confidence <= 0 || confidence > 1 {
-		confidence = 0.5
-	}
-	importance := 0
-	if kind == domain.MemoryKindEvent {
-		importance = 1
-	}
-
-	return domain.Memory{
-		ID:                   id.New(),
-		Scope:                scope,
-		OwnerID:              owner,
-		Kind:                 kind,
-		Content:              content,
-		ContentHash:          hashContent(content),
-		Keywords:             strings.Join(deriveKeywords(content), " "),
-		OccurredAt:           occurredAt.UnixMilli(),
-		DayKey:               dayKeyOf(occurredAt),
-		SourceConversationID: conversationID,
-		SourceMessageID:      messageID,
-		SourceRole:           "user",
-		Confidence:           confidence,
-		Importance:           importance,
-		Status:               domain.MemoryActive,
-		SupersedesID:         strings.TrimSpace(candidate.SupersedesID),
-		CreatedAt:            now.UnixMilli(),
-		UpdatedAt:            now.UnixMilli(),
-	}, true
-}
-
-// save 处理去重与替代；返回是否产生了一次写入或更新。
-func (m *MemoryService) save(ctx context.Context, item domain.Memory) (bool, error) {
+// save 处理去重；返回落库后的记录（去重时返回已有记录）。
+func (m *MemoryService) save(ctx context.Context, item domain.Memory) (domain.Memory, error) {
 	existing, err := m.store.Memories.GetActiveByHash(ctx, item.Scope, item.OwnerID, item.Kind, item.ContentHash)
 	if err == nil {
 		confidence := math.Max(existing.Confidence, item.Confidence)
-		if item.Pinned && !existing.Pinned {
-			if err := m.store.Memories.SetPinned(ctx, existing.ID, true, item.UpdatedAt); err != nil {
-				return false, err
-			}
-		}
 		if err := m.store.Memories.Touch(ctx, existing.ID, confidence, item.UpdatedAt, existing.LastUsedAt); err != nil {
-			return false, err
+			return domain.Memory{}, err
 		}
-		m.markDigestDirty(item.Scope, item.OwnerID, item.DayKey)
-		return true, nil
+		existing.Confidence = confidence
+		existing.UpdatedAt = item.UpdatedAt
+		m.markWeekDigestDirty(item.Scope, item.OwnerID, item.DayKey)
+		return existing, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return false, err
+		return domain.Memory{}, err
 	}
 
-	if item.SupersedesID != "" {
-		if err := m.store.Memories.Supersede(ctx, item.SupersedesID, item.UpdatedAt); err != nil && !errors.Is(err, store.ErrNotFound) {
-			m.logger.Warn("替代旧记忆失败", "memory", item.SupersedesID, "error", err)
-		}
-	}
 	if err := m.store.Memories.Insert(ctx, item); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			// 并发写入同一条内容，交给下一次抽取去重。
-			return false, nil
+			// 并发写入同一条内容：回查已有记录，按成功处理。
+			if existing, getErr := m.store.Memories.GetActiveByHash(ctx, item.Scope, item.OwnerID, item.Kind, item.ContentHash); getErr == nil {
+				return existing, nil
+			}
+			return item, nil
 		}
-		return false, err
+		return domain.Memory{}, err
 	}
-	m.markDigestDirty(item.Scope, item.OwnerID, item.DayKey)
-	return true, nil
+	m.markWeekDigestDirty(item.Scope, item.OwnerID, item.DayKey)
+	return item, nil
 }
 
 // PromptBlock 组装注入 prompt 的记忆块；没有可用记忆时返回空字符串。
 // 主助手只读用户全局域，子 Agent 只读自己的专属域，两边不交叉注入。
+// 这里只注入置顶、最近与关键词命中的热记忆，更久远的内容交给检索工具。
 func (m *MemoryService) PromptBlock(agentID, question string) string {
 	if m == nil {
 		return ""
 	}
 
-	owners := make([]memoryOwner, 0, 1)
-	if agentID == "" || agentID == mainAgentID {
-		if m.MemoryEnabled("") {
-			owners = append(owners, memoryOwner{scope: domain.MemoryScopeUser, owner: userMemoryOwnerID})
-		}
-	} else if m.MemoryEnabled(agentID) {
-		owners = append(owners, memoryOwner{scope: domain.MemoryScopeAgent, owner: agentID})
-	}
-	if len(owners) == 0 {
+	owner := memoryOwnerFor(agentID)
+	if !m.MemoryEnabled(memoryEnabledOwner(agentID)) {
 		return ""
 	}
 
@@ -470,31 +507,19 @@ func (m *MemoryService) PromptBlock(agentID, question string) string {
 	recentSince := now.AddDate(0, 0, -memoryRecentDays).UnixMilli()
 	tokens := questionKeywords(question)
 
-	seen := make(map[string]bool)
-	scored := make([]scoredMemory, 0)
-	for _, owner := range owners {
-		items, err := m.store.Memories.ListActive(context.Background(), owner.scope, owner.owner, 500)
-		if err != nil {
-			m.logger.Warn("读取记忆失败，跳过注入", "scope", owner.scope, "owner", owner.owner, "error", err)
-			continue
-		}
-		for _, item := range items {
-			if seen[item.ID] {
-				continue
-			}
-			seen[item.ID] = true
-			candidate := scoreMemory(item, tokens, recentSince)
-			if !item.Pinned && !candidate.recent && !candidate.matched {
-				continue
-			}
-			scored = append(scored, candidate)
-		}
+	items, err := m.store.Memories.ListActive(context.Background(), owner.scope, owner.owner, 500)
+	if err != nil {
+		m.logger.Warn("读取记忆失败，跳过注入", "scope", owner.scope, "owner", owner.owner, "error", err)
+		return ""
 	}
 
-	if needsRecall(question) {
-		for _, candidate := range m.digestMemories(owners, tokens, seen) {
-			scored = append(scored, candidate)
+	scored := make([]scoredMemory, 0, len(items))
+	for _, item := range items {
+		candidate := scoreMemory(item, tokens, recentSince)
+		if !item.Pinned && !candidate.recent && !candidate.matched {
+			continue
 		}
+		scored = append(scored, candidate)
 	}
 	if len(scored) == 0 {
 		return ""
@@ -530,66 +555,46 @@ func (m *MemoryService) PromptBlock(agentID, question string) string {
 	return renderMemoryBlock(selected)
 }
 
-// digestMemories 在用户提到旧事时展开日摘要对应的原子记忆。
-func (m *MemoryService) digestMemories(owners []memoryOwner, tokens []string, seen map[string]bool) []scoredMemory {
-	ctx, cancel := context.WithTimeout(m.ctx, memoryDigestTimeout)
+// ensureDigests 为存在记忆的作用域补齐最近若干周的摘要。
+// 未变化的周直接跳过，避免重复调用模型。
+func (m *MemoryService) ensureDigests() {
+	ctx, cancel := context.WithTimeout(m.ctx, memoryDigestTimeout*3)
 	defer cancel()
 
-	out := make([]scoredMemory, 0)
-	matchedDigests := 0
+	owners, err := m.store.Memories.ListOwners(ctx)
+	if err != nil {
+		m.logger.Warn("读取记忆归属失败，跳过摘要任务", "error", err)
+		return
+	}
+	periods := recentWeekPeriods(m.now(), memoryDigestWeekWindow)
 	generated := 0
 	for _, owner := range owners {
-		if matchedDigests >= memoryDigestDayLimit {
-			break
-		}
-		days, err := m.store.Memories.ListDays(ctx, owner.scope, owner.owner, 14)
-		if err != nil {
-			m.logger.Warn("读取记忆日期失败", "scope", owner.scope, "owner", owner.owner, "error", err)
-			continue
-		}
-		for _, day := range days {
-			if matchedDigests >= memoryDigestDayLimit {
-				break
+		for _, period := range periods {
+			if generated >= memoryDigestGenLimit {
+				return
 			}
-			digest, err := m.store.MemoryDigests.Get(ctx, owner.scope, owner.owner, domain.DigestDay, day)
-			if err != nil || digest.Dirty {
-				// 每次检索最多补建 3 个摘要，避免一次请求触发大量模型调用。
-				if generated >= memoryDigestGenLimit {
-					continue
-				}
-				generated++
-				digest, err = m.ensureDayDigest(ctx, owner.scope, owner.owner, day)
-				if err != nil {
-					if !errors.Is(err, store.ErrNotFound) {
-						m.logger.Warn("生成日摘要失败", "day", day, "error", err)
-					}
-					continue
-				}
-			}
-			if !digestMatches(digest, tokens) {
+			digest, err := m.store.MemoryDigests.Get(ctx, owner.Scope, owner.OwnerID, domain.DigestWeek, period.start)
+			if err == nil && !digest.Dirty {
 				continue
 			}
-			matchedDigests++
-			items, err := m.store.MemoryDigests.Items(ctx, digest.ID)
-			if err != nil {
-				m.logger.Warn("读取摘要关联记忆失败", "digest", digest.ID, "error", err)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				m.logger.Warn("读取周摘要失败", "period", period.start, "error", err)
 				continue
 			}
-			for _, item := range items {
-				if seen[item.ID] {
-					continue
+			if _, err := m.ensureWeekDigest(ctx, memoryOwner{scope: owner.Scope, owner: owner.OwnerID}, period); err != nil {
+				if !errors.Is(err, store.ErrNotFound) {
+					m.logger.Warn("生成周摘要失败", "period", period.start, "error", err)
 				}
-				seen[item.ID] = true
-				out = append(out, scoredMemory{item: item, score: 20 + item.Confidence, recent: false, matched: true})
+				continue
 			}
+			generated++
 		}
 	}
-	return out
 }
 
-// ensureDayDigest 按需生成或重建某一天的摘要；没有记忆时返回 ErrNotFound。
-func (m *MemoryService) ensureDayDigest(ctx context.Context, scope domain.MemoryScope, ownerID, day string) (domain.MemoryDigest, error) {
-	items, err := m.store.Memories.ListByDay(ctx, scope, ownerID, day)
+// ensureWeekDigest 生成或重建某一周的摘要；没有记忆时返回 ErrNotFound。
+func (m *MemoryService) ensureWeekDigest(ctx context.Context, owner memoryOwner, period weekPeriod) (domain.MemoryDigest, error) {
+	items, err := m.store.Memories.ListByRange(ctx, owner.scope, owner.owner, period.startMs, period.endMs)
 	if err != nil {
 		return domain.MemoryDigest{}, err
 	}
@@ -598,7 +603,7 @@ func (m *MemoryService) ensureDayDigest(ctx context.Context, scope domain.Memory
 	}
 	version := digestSourceVersion(items)
 
-	existing, err := m.store.MemoryDigests.Get(ctx, scope, ownerID, domain.DigestDay, day)
+	existing, err := m.store.MemoryDigests.Get(ctx, owner.scope, owner.owner, domain.DigestWeek, period.start)
 	if err == nil && !existing.Dirty && existing.SourceVersion == version {
 		return existing, nil
 	}
@@ -613,11 +618,11 @@ func (m *MemoryService) ensureDayDigest(ctx context.Context, scope domain.Memory
 	now := m.now()
 	digest := domain.MemoryDigest{
 		ID:            id.New(),
-		Scope:         scope,
-		OwnerID:       ownerID,
-		Level:         domain.DigestDay,
-		PeriodStart:   day,
-		PeriodEnd:     day,
+		Scope:         owner.scope,
+		OwnerID:       owner.owner,
+		Level:         domain.DigestWeek,
+		PeriodStart:   period.start,
+		PeriodEnd:     period.end,
 		Summary:       summary,
 		Keywords:      strings.Join(keywords, " "),
 		MemoryCount:   len(items),
@@ -632,11 +637,11 @@ func (m *MemoryService) ensureDayDigest(ctx context.Context, scope domain.Memory
 	if err := m.store.MemoryDigests.Upsert(ctx, digest, memoryIDs); err != nil {
 		return domain.MemoryDigest{}, err
 	}
-	return m.store.MemoryDigests.Get(ctx, scope, ownerID, domain.DigestDay, day)
+	return m.store.MemoryDigests.Get(ctx, owner.scope, owner.owner, domain.DigestWeek, period.start)
 }
 
 func (m *MemoryService) summarize(ctx context.Context, items []domain.Memory) (string, []string, error) {
-	// 单日记忆过多时只取前 50 条，避免一次输入过长。
+	// 单周记忆过多时只取前 50 条，避免一次输入过长。
 	if len(items) > 50 {
 		items = items[:50]
 	}
@@ -662,12 +667,18 @@ func (m *MemoryService) summarize(ctx context.Context, items []domain.Memory) (s
 	return strings.TrimSpace(decoded.Summary), decoded.Keywords, nil
 }
 
-func (m *MemoryService) markDigestDirty(scope domain.MemoryScope, ownerID, day string) {
-	if day == "" {
+// markWeekDigestDirty 把记忆所在的周摘要标记为过期；周摘要不存在时是空操作。
+func (m *MemoryService) markWeekDigestDirty(scope domain.MemoryScope, ownerID, dayKey string) {
+	if dayKey == "" {
 		return
 	}
-	if err := m.store.MemoryDigests.MarkDirty(context.Background(), scope, ownerID, domain.DigestDay, day); err != nil {
-		m.logger.Warn("标记记忆摘要过期失败", "day", day, "error", err)
+	day, err := time.ParseInLocation("2006-01-02", dayKey, time.Local)
+	if err != nil {
+		return
+	}
+	period := weekPeriodOf(day)
+	if err := m.store.MemoryDigests.MarkDirty(context.Background(), scope, ownerID, domain.DigestWeek, period.start); err != nil {
+		m.logger.Warn("标记记忆摘要过期失败", "period", period.start, "error", err)
 	}
 }
 
@@ -683,6 +694,116 @@ func (m *MemoryService) markUsedAsync(ids []string) {
 			m.logger.Warn("更新记忆使用时间失败", "error", err)
 		}
 	}()
+}
+
+func (m *MemoryService) ownsMemory(agentID string, item domain.Memory) bool {
+	owner := memoryOwnerFor(agentID)
+	return item.Scope == owner.scope && item.OwnerID == owner.owner
+}
+
+// memoryOwnerFor 按调用方 Agent 推导记忆归属：主助手写用户全局域，子 Agent 写自己的专属域。
+func memoryOwnerFor(agentID string) memoryOwner {
+	if agentID == "" || agentID == mainAgentID {
+		return memoryOwner{scope: domain.MemoryScopeUser, owner: userMemoryOwnerID}
+	}
+	return memoryOwner{scope: domain.MemoryScopeAgent, owner: agentID}
+}
+
+// memoryEnabledOwner 把 Agent ID 映射为开关键的归属：主助手用全局开关。
+func memoryEnabledOwner(agentID string) string {
+	if agentID == "" || agentID == mainAgentID {
+		return ""
+	}
+	return agentID
+}
+
+// parseMemoryTime 解析模型给出的发生时间；无法解析时返回零值，由调用方回退到当前时间。
+func parseMemoryTime(text string) time.Time {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
+		if parsed, err := time.ParseInLocation(layout, text, time.Local); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+// clampOccurredAt 只接受最近一周到未来一天之间的时间，其余回退到当前时间，
+// 避免模型编造久远或未来的日期污染周期摘要。
+func clampOccurredAt(occurred, now time.Time) time.Time {
+	if occurred.IsZero() {
+		return now
+	}
+	if occurred.Before(now.Add(-7*24*time.Hour)) || occurred.After(now.Add(24*time.Hour)) {
+		return now
+	}
+	return occurred
+}
+
+func normalizeMemoryKind(kind string) domain.MemoryKind {
+	switch value := domain.MemoryKind(strings.TrimSpace(kind)); value {
+	case domain.MemoryKindProfile, domain.MemoryKindPreference, domain.MemoryKindFact,
+		domain.MemoryKindDecision, domain.MemoryKindEvent:
+		return value
+	default:
+		return domain.MemoryKindPreference
+	}
+}
+
+func parseDayStart(day string) (int64, bool) {
+	parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(day), time.Local)
+	if err != nil {
+		return 0, false
+	}
+	return parsed.UnixMilli(), true
+}
+
+func parseDayEnd(day string) (int64, bool) {
+	parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(day), time.Local)
+	if err != nil {
+		return 0, false
+	}
+	return parsed.AddDate(0, 0, 1).UnixMilli() - 1, true
+}
+
+// weekPeriodOf 返回给定日期所在自然周的周一与周日。
+func weekPeriodOf(day time.Time) weekPeriod {
+	local := day.In(time.Local)
+	offset := (int(local.Weekday()) + 6) % 7 // 周一为 0
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -offset)
+	end := start.AddDate(0, 0, 6)
+	return weekPeriod{
+		start:   start.Format("2006-01-02"),
+		end:     end.Format("2006-01-02"),
+		startMs: start.UnixMilli(),
+		endMs:   end.AddDate(0, 0, 1).UnixMilli() - 1,
+	}
+}
+
+// recentWeekPeriods 返回最近 count 个自然周，当前周在最前。
+func recentWeekPeriods(now time.Time, count int) []weekPeriod {
+	out := make([]weekPeriod, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, weekPeriodOf(now.AddDate(0, 0, -7*i)))
+	}
+	return out
+}
+
+func scoreSearchMemory(item domain.Memory, tokens []string, recentSince int64) float64 {
+	score := item.Confidence + float64(item.Importance)*2
+	if item.Pinned {
+		score += 100
+	}
+	if memoryMatches(item, tokens) {
+		score += 10
+	}
+	if item.UpdatedAt >= recentSince {
+		score += 5
+	}
+	return score
 }
 
 func scoreMemory(item domain.Memory, tokens []string, recentSince int64) scoredMemory {
@@ -719,8 +840,7 @@ func memoryMatches(item domain.Memory, tokens []string) bool {
 
 func digestMatches(digest domain.MemoryDigest, tokens []string) bool {
 	if len(tokens) == 0 {
-		// 没有可匹配的关键词时，只在明确的回忆语境下展开最近摘要。
-		return true
+		return false
 	}
 	text := strings.ToLower(digest.Summary + " " + digest.Keywords)
 	for _, token := range tokens {
@@ -758,15 +878,6 @@ func renderMemoryBlock(items []domain.Memory) string {
 
 func memoryLine(item domain.Memory) string {
 	return "- " + time.UnixMilli(item.OccurredAt).In(time.Local).Format("2006-01-02") + "：" + item.Content
-}
-
-func needsRecall(question string) bool {
-	for _, cue := range []string{"上次", "之前", "以前", "那天", "上周", "去年", "还记得", "回忆"} {
-		if strings.Contains(question, cue) {
-			return true
-		}
-	}
-	return false
 }
 
 // questionKeywords 同时产出英文单词与中文二元组，便于与记忆关键词粗匹配。
@@ -838,31 +949,6 @@ func deriveKeywords(content string) []string {
 		out = out[:8]
 	}
 	return out
-}
-
-func parseMemoryCandidates(text string) ([]memoryCandidate, error) {
-	body := extractJSONArray(text)
-	if body == "" {
-		return nil, nil
-	}
-	var candidates []memoryCandidate
-	if err := json.Unmarshal([]byte(body), &candidates); err != nil {
-		return nil, fmt.Errorf("记忆抽取结果解析失败：%w", err)
-	}
-	if len(candidates) > memoryExtractLimit {
-		candidates = candidates[:memoryExtractLimit]
-	}
-	return candidates, nil
-}
-
-// extractJSONArray 去掉模型可能附带的说明文字与代码围栏。
-func extractJSONArray(text string) string {
-	start := strings.Index(text, "[")
-	end := strings.LastIndex(text, "]")
-	if start < 0 || end <= start {
-		return ""
-	}
-	return text[start : end+1]
 }
 
 func extractJSONObject(text string) string {

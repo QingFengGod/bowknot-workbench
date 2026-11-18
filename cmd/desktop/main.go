@@ -125,8 +125,11 @@ func main() {
 	// 工具服务是应用/插件工具的唯一执行入口，启动时把已安装的工具同步进注册表。
 	// 危险工具的审批通过 ApprovalHub 转发到 UI，用户确认后才真正执行。
 	approvals := app.NewApprovalHub()
+	// 产物服务统一托管 Agent 交付物：校验来源、落盘、写库与删除。
+	artifacts := app.NewArtifactService(db, dataPaths.Root, dataPaths.Artifacts, logger)
 	// ToolExecutor 内的 Agent 能力在 AgentService 创建后注入，这里先保留引用。
 	executor := app.NewToolExecutor(db, pluginProcesses)
+	executor.SetArtifacts(artifacts)
 	toolSvc := tool.NewService(tool.Options{
 		Store:    db,
 		Logger:   logger,
@@ -134,6 +137,9 @@ func main() {
 		Executor: executor,
 	})
 	builtinTools := append([]tool.ToolSpec{tool.PersonaToolSpec()}, tool.AgentHubToolSpecs()...)
+	builtinTools = append(builtinTools, tool.TaskToolSpecs()...)
+	builtinTools = append(builtinTools, tool.ArtifactToolSpec())
+	builtinTools = append(builtinTools, tool.MemoryToolSpecs()...)
 	toolSvc.RegisterBuiltin(builtinTools...)
 	if err := toolSvc.SyncApps(lc.Context()); err != nil {
 		logger.Warn("同步应用工具失败", "error", err)
@@ -146,13 +152,25 @@ func main() {
 	agents := app.NewAgentService(db, logger, provider, toolSvc, approvals)
 	assistant.SetModels(models)
 	agents.SetModels(models)
-	executor.SetAgentHub(app.NewAgentHub(agents, assistant))
-	// 长期记忆服务负责抽取、检索与摘要；助手与 Agent 共用同一个实例。
+	assistant.SetArtifacts(artifacts)
+	agents.SetArtifacts(artifacts)
+	// 群聊服务负责主助手与成员的 @ 编排、轮次上限与最终汇总。
+	groups := app.NewGroupService(db, logger, agents)
+	agents.SetGroups(groups)
+	// 任务服务负责主助手派发的后台任务：排队、执行、取消、重试与汇报。
+	tasks := app.NewTaskService(db, logger, provider, agents, assistant)
+	executor.SetAgentHub(app.NewAgentHub(agents, tasks))
+	// 长期记忆服务负责工具写入、检索与周期摘要；助手与 Agent 共用同一个实例。
 	memory := app.NewMemoryService(db, logger, provider)
 	assistant.SetMemory(memory)
 	agents.SetMemory(memory)
+	executor.SetMemory(memory)
+	tasks.SetMemory(memory)
+	memory.Start()
 	lc.Add("assistant", assistant.Shutdown)
 	lc.Add("agents", agents.Shutdown)
+	lc.Add("groups", groups.Shutdown)
+	lc.Add("tasks", tasks.Shutdown)
 	lc.Add("memory", memory.Shutdown)
 
 	appBackend := backend.NewApp(version)
@@ -164,6 +182,8 @@ func main() {
 		Apps:      appCatalog,
 		Assistant: assistant,
 		Agents:    agents,
+		Tasks:     tasks,
+		Artifacts: artifacts,
 		Memory:    memory,
 	})
 

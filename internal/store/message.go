@@ -6,7 +6,7 @@ import (
 	"bowknot-workbench/internal/domain"
 )
 
-const messageColumns = `id, conversation_id, seq, role, content, status, error, sender_name, sender_avatar, emotion, memory_written, created_at`
+const messageColumns = `id, conversation_id, seq, role, content, status, error, sender_name, sender_avatar, emotion, memory_written, created_at, sender_kind, sender_id, msg_type, task_id, visibility`
 
 type MessageStore struct {
 	s *Store
@@ -128,10 +128,11 @@ func (m *MessageStore) append(ctx context.Context, item domain.Message) (domain.
 	item.Seq = seq
 
 	_, err := m.s.q.ExecContext(ctx,
-		`INSERT INTO message(`+messageColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO message(`+messageColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ConversationID, item.Seq, string(item.Role), item.Content,
 		string(item.Status), item.Error, item.SenderName, item.SenderAvatar,
 		item.Emotion, boolInt(item.MemoryWritten), item.CreatedAt,
+		item.SenderKind, item.SenderID, item.MessageType, item.TaskID, item.Visibility,
 	)
 	if err != nil {
 		return domain.Message{}, wrapErr(err)
@@ -189,6 +190,7 @@ func scanMessage(row rowScanner) (domain.Message, error) {
 		&item.ID, &item.ConversationID, &item.Seq, &role, &item.Content,
 		&status, &item.Error, &item.SenderName, &item.SenderAvatar,
 		&item.Emotion, &memoryWrite, &item.CreatedAt,
+		&item.SenderKind, &item.SenderID, &item.MessageType, &item.TaskID, &item.Visibility,
 	)
 	item.Role = domain.Role(role)
 	item.Status = domain.MessageStatus(status)

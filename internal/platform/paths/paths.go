@@ -9,24 +9,26 @@ import (
 )
 
 const (
-	appDirName     = ".bowknot-workbench"
-	databaseName   = "bowknot.db"
-	configName     = "config.json"
-	appsDirName    = "apps"
-	pluginsDirName = "plugins"
-	logsDirName    = "logs"
-	tempDirName    = "tmp"
+	appDirName       = ".bowknot-workbench"
+	databaseName     = "bowknot.db"
+	configName       = "config.json"
+	appsDirName      = "apps"
+	pluginsDirName   = "plugins"
+	logsDirName      = "logs"
+	tempDirName      = "tmp"
+	artifactsDirName = "artifacts"
 )
 
 // Paths 是一次解析结果，所有字段都是绝对路径。
 type Paths struct {
-	Root     string
-	Database string
-	Config   string
-	Apps     string
-	Plugins  string
-	Logs     string
-	Temp     string
+	Root      string
+	Database  string
+	Config    string
+	Apps      string
+	Plugins   string
+	Logs      string
+	Temp      string
+	Artifacts string
 }
 
 // Resolve 按 BOWKNOT_HOME、用户目录的顺序确定数据根目录。
@@ -46,19 +48,20 @@ func Resolve() (Paths, error) {
 	}
 
 	return Paths{
-		Root:     abs,
-		Database: filepath.Join(abs, databaseName),
-		Config:   filepath.Join(abs, configName),
-		Apps:     filepath.Join(abs, appsDirName),
-		Plugins:  filepath.Join(abs, pluginsDirName),
-		Logs:     filepath.Join(abs, logsDirName),
-		Temp:     filepath.Join(abs, tempDirName),
+		Root:      abs,
+		Database:  filepath.Join(abs, databaseName),
+		Config:    filepath.Join(abs, configName),
+		Apps:      filepath.Join(abs, appsDirName),
+		Plugins:   filepath.Join(abs, pluginsDirName),
+		Logs:      filepath.Join(abs, logsDirName),
+		Temp:      filepath.Join(abs, tempDirName),
+		Artifacts: filepath.Join(abs, artifactsDirName),
 	}, nil
 }
 
 // Prepare 创建运行所需目录，已存在时保持原样。
 func (p Paths) Prepare() error {
-	for _, dir := range []string{p.Root, p.Logs, p.Apps, p.Plugins, p.Temp} {
+	for _, dir := range []string{p.Root, p.Logs, p.Apps, p.Plugins, p.Temp, p.Artifacts} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("创建目录 %s 失败：%w", dir, err)
 		}

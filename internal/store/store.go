@@ -41,6 +41,8 @@ type Store struct {
 	Conversations *ConversationStore
 	Messages      *MessageStore
 	Runs          *RunStore
+	Tasks         *TaskStore
+	Artifacts     *ArtifactStore
 	Agents        *AgentStore
 	Groups        *GroupStore
 	Apps          *AppStore
@@ -110,6 +112,16 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		logger.Warn("收敛未完成的生成任务", "count", interrupted)
 	}
 
+	// 任务队列只存在于进程内，重启后未完成的任务收敛为失败，交给用户手动重试。
+	abortedTasks, err := s.Tasks.ConvergeInterrupted(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: converge interrupted tasks: %w", err)
+	}
+	if abortedTasks > 0 {
+		logger.Warn("收敛未完成的后台任务", "count", abortedTasks)
+	}
+
 	if opts.Seed {
 		if err := s.seedDemo(ctx); err != nil {
 			_ = db.Close()
@@ -158,6 +170,8 @@ func newStore(db *sql.DB, q querier, state *storeState, logger *slog.Logger, inT
 	s.Conversations = &ConversationStore{s: s}
 	s.Messages = &MessageStore{s: s}
 	s.Runs = &RunStore{s: s}
+	s.Tasks = &TaskStore{s: s}
+	s.Artifacts = &ArtifactStore{s: s}
 	s.Agents = &AgentStore{s: s}
 	s.Groups = &GroupStore{s: s}
 	s.Apps = &AppStore{s: s}

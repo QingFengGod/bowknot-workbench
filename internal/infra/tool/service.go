@@ -72,8 +72,31 @@ func (s *Service) Available(ctx context.Context, agentID string) []ToolSpec {
 			out = append(out, spec)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	// 记忆工具优先声明：工具列表较长时，排在前面的工具更容易被模型选中。
+	sort.Slice(out, func(i, j int) bool {
+		left, right := toolPriority(out[i].ID), toolPriority(out[j].ID)
+		if left != right {
+			return left < right
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
+}
+
+// toolPriority 决定工具在模型请求里的先后顺序，数值越小越靠前。
+func toolPriority(id string) int {
+	switch id {
+	case RememberToolID:
+		return 0
+	case SearchMemoryToolID:
+		return 1
+	case UpdateMemoryToolID:
+		return 2
+	case ForgetMemoryToolID:
+		return 3
+	default:
+		return 10
+	}
 }
 
 // SyncApps 用 store 中的应用工具全量替换注册表中 app 来源的条目。
@@ -205,6 +228,9 @@ func (s *Service) authorize(ctx context.Context, spec ToolSpec, agentID string) 
 		}
 		if IsAgentHubTool(spec.ID) && agentID != MainAssistantAgentID {
 			return fmt.Errorf("%w：只有主助手可以创建或调用 Agent", ErrNotAuthorized)
+		}
+		if IsTaskTool(spec.ID) && agentID != MainAssistantAgentID {
+			return fmt.Errorf("%w：只有主助手可以管理任务", ErrNotAuthorized)
 		}
 		return nil
 

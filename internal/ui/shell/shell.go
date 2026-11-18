@@ -7,8 +7,10 @@ import (
 	"bowknot-workbench/internal/ui/pages/agents"
 	"bowknot-workbench/internal/ui/pages/aigc"
 	"bowknot-workbench/internal/ui/pages/apps"
+	"bowknot-workbench/internal/ui/pages/artifacts"
 	"bowknot-workbench/internal/ui/pages/assistant"
 	"bowknot-workbench/internal/ui/pages/plugins"
+	"bowknot-workbench/internal/ui/pages/tasks"
 	"bowknot-workbench/internal/ui/theme"
 
 	"github.com/egoist/mygo"
@@ -22,6 +24,8 @@ type Deps struct {
 	Apps      contract.AppCatalog
 	Assistant contract.AssistantService
 	Agents    contract.AgentService
+	Tasks     contract.TaskService
+	Artifacts contract.ArtifactService
 	Memory    contract.MemoryService
 }
 
@@ -37,6 +41,8 @@ var navItems = []navItem{
 	{Route: "/apps", Label: "Apps", Icon: components.IconApps},
 	{Route: "/assistant", Label: "助手", Icon: components.IconAssistant},
 	{Route: "/agents", Label: "agents", Icon: components.IconAgents},
+	{Route: "/tasks", Label: "任务", Icon: components.IconTasks},
+	{Route: "/artifacts", Label: "产物", Icon: components.IconArtifact},
 	{Route: "/plugins", Label: "插件", Icon: components.IconPlugins},
 	{Route: "/aigc/generate", Label: "AIGC", Icon: components.IconAIGC},
 }
@@ -65,16 +71,33 @@ func New(deps Deps) *Shell {
 		mode:     theme.ModeSystem,
 		launcher: newAppLauncher(),
 	}
+	agentPage := agents.New(deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, agents.Hooks{Update: s.update})
 	s.native = map[string]pages.Page{
 		"/apps": apps.New(deps.Apps, apps.Hooks{
 			Open:          s.launcher.Open,
 			Close:         s.launcher.Close,
 			SelectPackage: selectAppPackage,
 		}),
-		"/assistant":     assistant.New(deps.Assistant, deps.Memory, assistant.Hooks{Update: s.update}),
-		"/agents":        agents.New(deps.Agents, deps.Memory, agents.Hooks{Update: s.update}),
+		"/assistant": assistant.New(deps.Assistant, deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, assistant.Hooks{
+			Update: s.update,
+			OpenAgentChat: func(agentID string) {
+				s.navigate("/agents")
+				agentPage.OpenAgentChat(agentID)
+			},
+		}),
+		"/agents":    agentPage,
+		"/artifacts": artifacts.New(deps.Artifacts, deps.Agents, artifacts.Hooks{Update: s.update}),
+		"/tasks": tasks.New(deps.Tasks, deps.Agents, deps.Artifacts, tasks.Hooks{
+			Update: s.update,
+			OpenAgentChat: func(agentID string) {
+				s.navigate("/agents")
+				agentPage.OpenAgentChat(agentID)
+			},
+		}),
 		"/aigc/generate": aigc.New(),
-		"/plugins":       plugins.New(deps.Plugins),
+		"/plugins": plugins.New(deps.Plugins, plugins.Hooks{
+			SelectPackage: selectPluginPackage,
+		}),
 	}
 	s.current = s.native[s.active]
 	return s
@@ -86,6 +109,23 @@ func selectAppPackage() (string, error) {
 		Title: "选择应用包",
 		Filters: []mygo.FileFilter{
 			{Name: "应用包 (*.tar)", Extensions: []string{"tar"}},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+	return files[0], nil
+}
+
+// selectPluginPackage 用系统文件选择器挑选 tar 插件包，取消时返回空路径。
+func selectPluginPackage() (string, error) {
+	files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Title: "选择插件包",
+		Filters: []mygo.FileFilter{
+			{Name: "插件包 (*.tar)", Extensions: []string{"tar"}},
 		},
 	})
 	if err != nil {

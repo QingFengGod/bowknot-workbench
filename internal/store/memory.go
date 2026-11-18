@@ -101,6 +101,58 @@ func (m *MemoryStore) ListByDay(ctx context.Context, scope domain.MemoryScope, o
 	return scanMemories(rows)
 }
 
+// ListByRange 返回发生时间落在 [fromMs, toMs] 内的 active 记忆，用于按周期线索定位原文。
+func (m *MemoryStore) ListByRange(ctx context.Context, scope domain.MemoryScope, ownerID string, fromMs, toMs int64) ([]domain.Memory, error) {
+	if err := m.s.ensureOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := m.s.q.QueryContext(ctx,
+		`SELECT `+memoryColumns+` FROM memory
+		 WHERE scope = ? AND owner_id = ? AND status = 'active' AND occurred_at BETWEEN ? AND ?
+		 ORDER BY occurred_at ASC, rowid ASC`,
+		string(scope), ownerID, fromMs, toMs,
+	)
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// MemoryOwner 是存在 active 记忆的作用域与归属，供摘要任务枚举。
+type MemoryOwner struct {
+	Scope   domain.MemoryScope
+	OwnerID string
+}
+
+// ListOwners 返回存在 active 记忆的作用域与归属组合。
+func (m *MemoryStore) ListOwners(ctx context.Context) ([]MemoryOwner, error) {
+	if err := m.s.ensureOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := m.s.q.QueryContext(ctx,
+		`SELECT DISTINCT scope, owner_id FROM memory WHERE status = 'active' ORDER BY scope, owner_id`,
+	)
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]MemoryOwner, 0)
+	for rows.Next() {
+		var owner MemoryOwner
+		var scope string
+		if err := rows.Scan(&scope, &owner.OwnerID); err != nil {
+			return nil, wrapErr(err)
+		}
+		owner.Scope = domain.MemoryScope(scope)
+		out = append(out, owner)
+	}
+	return out, wrapErr(rows.Err())
+}
+
 // ListDays 返回存在 active 记忆的日期，按日期倒序，用于挑选需要生成摘要的周期。
 func (m *MemoryStore) ListDays(ctx context.Context, scope domain.MemoryScope, ownerID string, limit int) ([]string, error) {
 	if err := m.s.ensureOpen(); err != nil {

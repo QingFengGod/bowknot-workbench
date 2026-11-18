@@ -48,6 +48,19 @@ type ChatMessage struct {
 	// SenderName 与 SenderAvatar 只在群聊回复里设置，标识发言人。
 	SenderName   string `json:"senderName,omitempty"`
 	SenderAvatar string `json:"senderAvatar,omitempty"`
+	// SenderKind / SenderID 标识发送者身份（user / main / agent）。
+	SenderKind string `json:"senderKind,omitempty"`
+	SenderID   string `json:"senderId,omitempty"`
+	// MessageType 区分普通消息与任务消息（chat / task_dispatch / task_report）。
+	MessageType string `json:"messageType,omitempty"`
+	// TaskID 关联任务，非空时 UI 渲染任务卡片。
+	TaskID string `json:"taskId,omitempty"`
+	// Visibility 为 internal 的消息只在任务线程里展示。
+	Visibility string `json:"visibility,omitempty"`
+	// Task 是任务摘要，读取时按 TaskID 关联。
+	Task *TaskBrief `json:"task,omitempty"`
+	// Artifacts 是消息与所属任务关联的产物摘要。
+	Artifacts []ArtifactBrief `json:"artifacts,omitempty"`
 }
 
 // DefaultMessagePageSize 是消息分页的默认页大小。

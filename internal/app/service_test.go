@@ -265,8 +265,8 @@ func TestAgentAndGroupPersistAcrossRestart(t *testing.T) {
 			t.Fatalf("群聊消息会话 ID = %q, want %q", message.ConversationID, groupConversationID)
 		}
 	}
-	if messages[1].SenderName != "助理" {
-		t.Fatalf("群聊发言人 = %q, want 助理", messages[1].SenderName)
+	if messages[1].SenderName == "" || messages[1].SenderKind != "main" {
+		t.Fatalf("群聊发言人 = %q（%s），want 主助手姓名", messages[1].SenderName, messages[1].SenderKind)
 	}
 
 	if err := svc.Shutdown(context.Background()); err != nil {

@@ -2,7 +2,6 @@ package tool
 
 import (
 	"context"
-	"time"
 )
 
 // 内置 Agent 工具的 ID，与模型函数名保持一致，避免冒号与斜杠。
@@ -51,16 +50,17 @@ type RunAgentInput struct {
 	ConversationID string `json:"-"`
 }
 
-// AgentHub 由 app 层实现，负责真正的 Agent 读写与对话执行。
+// AgentHub 由 app 层实现，负责真正的 Agent 读写与任务派发。
 // 定义在 infra 侧是为了避免工具层反向依赖业务层。
 type AgentHub interface {
 	CreateAgent(ctx context.Context, in CreateAgentInput) (AgentRef, error)
 	ListAgents(ctx context.Context, query string) ([]AgentRef, error)
 	RunAgent(ctx context.Context, in RunAgentInput) (string, error)
+	ListTasks(ctx context.Context, in ListTasksInput) ([]TaskRef, error)
+	CancelTask(ctx context.Context, taskID string) (string, error)
 }
 
-// AgentHubToolSpecs 声明三个内置 Agent 工具。
-// 委派可能等待子 Agent 完整生成，因此单独放宽超时。
+// AgentHubToolSpecs 声明内置的 Agent 管理与派发工具。
 func AgentHubToolSpecs() []ToolSpec {
 	return []ToolSpec{
 		{
@@ -99,7 +99,7 @@ func AgentHubToolSpecs() []ToolSpec {
 		{
 			ID:          RunAgentToolID,
 			Name:        RunAgentToolID,
-			Description: "把任务异步交给一个专业 Agent，调用后立即返回，子 Agent 完成后会另行汇报。调用前应先用 builtin_list_agents 找到合适的 agentId。task 只写任务本身，不要写称呼、身份设定或「称呼用户为某某」这类指示。",
+			Description: "把任务交给一个专业 Agent 后台执行，调用后立即返回任务 ID，完成时会另行汇报。调用前应先用 builtin_list_agents 找到合适的 agentId。task 只写任务本身，不要写称呼、身份设定或「称呼用户为某某」这类指示。",
 			Source:      SourceBuiltin,
 			SourceID:    "builtin",
 			Parameters: `{
@@ -110,7 +110,6 @@ func AgentHubToolSpecs() []ToolSpec {
   },
   "required": ["agentId", "task"]
 }`,
-			Timeout: 3 * time.Minute,
 		},
 	}
 }

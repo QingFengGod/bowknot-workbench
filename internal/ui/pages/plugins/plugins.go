@@ -12,9 +12,16 @@ import (
 	"bowknot-workbench/internal/ui/theme"
 )
 
+// Hooks 是页面依赖的外部动作，由壳层注入。
+type Hooks struct {
+	// SelectPackage 打开系统文件选择器，返回选中的插件包路径；取消时返回空字符串。
+	SelectPackage func() (string, error)
+}
+
 // Page 是插件页的原生实现。
 type Page struct {
-	svc contract.PluginService
+	svc   contract.PluginService
+	hooks Hooks
 
 	plugins []contract.Plugin
 	agents  []contract.PluginAgent
@@ -37,8 +44,8 @@ type Page struct {
 }
 
 // New 创建插件页。
-func New(svc contract.PluginService) *Page {
-	p := &Page{svc: svc}
+func New(svc contract.PluginService, hooks Hooks) *Page {
+	p := &Page{svc: svc, hooks: hooks}
 	p.reload()
 	return p
 }
@@ -255,10 +262,7 @@ func (p *Page) agentRow(c *ui.Context, pluginID string, agent contract.PluginAge
 func (p *Page) installModal(c *ui.Context) {
 	t := c.Theme()
 
-	placeholder := "例如 D:\\bowknot-plugins\\my-plugin"
-	if p.installType == 1 {
-		placeholder = "例如 https://plugins.bowknot.dev/my-plugin"
-	}
+	placeholder := "例如 https://plugins.bowknot.dev/my-plugin"
 
 	components.Modal(c, components.ModalProps{
 		Open:  &p.installOpen,
@@ -272,19 +276,55 @@ func (p *Page) installModal(c *ui.Context) {
 				p.installOpen = false
 			}
 			if components.Button(c, components.ButtonProps{
-				Label:   "安装",
-				Variant: components.ButtonPrimary,
+				Label:    "安装",
+				Variant:  components.ButtonPrimary,
+				Disabled: strings.TrimSpace(p.installValue) == "",
 			}).Clicked() {
 				p.install()
 			}
 		},
 	}, func() {
-		ui.Text(c, "支持本地插件包目录或远程插件包地址，安装后可在这里授权给 Agent。").
+		ui.Text(c, "支持本地插件包或远程插件包地址，安装后可在这里授权给 Agent。").
 			FontSize(12).
 			TextColor(t.TextMuted)
 
-		ui.Tabs(c, &p.installType, "本地插件包", "远程地址")
-		ui.TextInput(c, &p.installValue).Placeholder(placeholder)
+		tabs := ui.Tabs(c, &p.installType, "本地插件包", "远程地址")
+		if tabs.Changed() {
+			p.installValue = ""
+			p.installErr = ""
+		}
+
+		// 本地包用系统文件选择器，避免让用户手输绝对路径。
+		if p.installType == 0 && p.hooks.SelectPackage != nil {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				value := p.installValue
+				color := t.Text
+				if value == "" {
+					value = "未选择 .tar 插件包"
+					color = t.TextMuted
+				}
+				ui.Box(c).
+					Grow(1).
+					Height(34).
+					PaddingX(10).
+					Radius(theme.RadiusSM).
+					Background(t.SurfaceHover).
+					Children(func() {
+						ui.Row(c).Fill().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, value).FontSize(12).TextColor(color).MaxLines(1)
+						})
+					})
+				if components.Button(c, components.ButtonProps{Label: "选择文件"}).Clicked() {
+					p.pickPackage()
+				}
+			})
+		} else {
+			input := ui.TextInput(c, &p.installValue).Placeholder(placeholder)
+			if input.Changed() {
+				p.installErr = ""
+			}
+		}
+
 		if p.installErr != "" {
 			ui.Text(c, p.installErr).FontSize(12).TextColor(t.Danger)
 		}
@@ -297,10 +337,10 @@ func (p *Page) uninstallModal(c *ui.Context) {
 		return
 	}
 
-	// 最后一个按钮是默认按钮，破坏性操作把「取消」放在最后，避免回车误删。
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
 	switch ui.AlertDialog(c, &p.uninstallOpen, "卸载插件",
 		fmt.Sprintf("确定卸载「%s」吗？卸载后所有 Agent 将无法再调用该插件的工具。", plugin.Name), "取消", "卸载") {
-	case 0:
+	case 1:
 		p.uninstall()
 	}
 }
@@ -344,6 +384,23 @@ func (p *Page) openInstall() {
 	p.installValue = ""
 	p.installErr = ""
 	p.installOpen = true
+}
+
+// pickPackage 通过系统文件选择器拿到本地插件包路径。
+func (p *Page) pickPackage() {
+	if p.hooks.SelectPackage == nil {
+		return
+	}
+	value, err := p.hooks.SelectPackage()
+	if err != nil {
+		p.installErr = err.Error()
+		return
+	}
+	if value == "" {
+		return
+	}
+	p.installValue = value
+	p.installErr = ""
 }
 
 func (p *Page) install() {

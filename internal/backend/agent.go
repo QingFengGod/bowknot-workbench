@@ -514,6 +514,12 @@ func (s *agentService) Stop(conversationID string) {
 	}
 }
 
+// GroupRevision 是原生群聊协作版本的占位实现，演示后端不做成员编排。
+func (s *agentService) GroupRevision() uint64 { return 0 }
+
+// GroupBusy 是原生群聊协作状态的占位实现，演示后端始终返回空闲。
+func (s *agentService) GroupBusy(conversationID string) bool { return false }
+
 // beginReplyLocked 追加一条空的助手消息并注册流，调用方解锁后启动 goroutine。
 func (s *agentService) beginReplyLocked(conversationID string) (string, chan contract.ChatEvent, chan struct{}) {
 	s.seq++

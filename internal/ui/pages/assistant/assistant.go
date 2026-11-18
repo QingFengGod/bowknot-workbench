@@ -19,13 +19,18 @@ import (
 type Hooks struct {
 	// Update 在主线程修改页面状态并触发重绘，供后台流式事件使用。
 	Update func(fn func())
+	// OpenAgentChat 跳转到指定员工的直聊会话。
+	OpenAgentChat func(agentID string)
 }
 
 // Page 是助手页的原生实现。
 type Page struct {
-	svc    contract.AssistantService
-	memory contract.MemoryService
-	hooks  Hooks
+	svc       contract.AssistantService
+	agents    contract.AgentService
+	tasks     contract.TaskService
+	artifacts contract.ArtifactService
+	memory    contract.MemoryService
+	hooks     Hooks
 
 	sessions   []contract.ChatSession
 	models     []contract.ChatModel
@@ -86,12 +91,8 @@ type Page struct {
 	approvalTool   string
 	approvalArgs   string
 
-	// 长期记忆面板及其编辑、清空状态。
+	// 长期记忆面板及其清空状态。
 	memoryOpen      bool
-	memoryEditOpen  bool
-	memoryEditID    string
-	memoryEditValue string
-	memoryEditErr   string
 	memoryClearOpen bool
 	memoryState     components.MemoryPanelState
 	// memoryRefreshPending 避免面板打开时重复启动刷新定时器。
@@ -101,17 +102,39 @@ type Page struct {
 	personaOpen  bool
 	personaDraft contract.AssistantPersona
 	personaErr   string
+
+	// 任务卡片：状态版本变化时刷新消息；过程抽屉只读展示任务线程。
+	lastTaskRevision uint64
+	processOpen      bool
+	processTask      contract.TaskDetail
+	processMessages  []contract.ChatMessage
+
+	// 转交入口：选择员工并填写任务说明后直接派发。
+	transferOpen    bool
+	transferAgentID string
+	transferDraft   string
+	transferErr     string
+	transferAgents  []contract.AgentInfo
+
+	// 产物预览：页面持有当前产物与一次性读取的预览数据。
+	viewer               components.ArtifactViewer
+	artifactOpen         bool
+	artifactDeleteOpen   bool
+	lastArtifactRevision uint64
 }
 
 // New 创建助手页。
-func New(svc contract.AssistantService, memory contract.MemoryService, hooks Hooks) *Page {
+func New(svc contract.AssistantService, agents contract.AgentService, tasks contract.TaskService, artifacts contract.ArtifactService, memory contract.MemoryService, hooks Hooks) *Page {
 	p := &Page{
-		svc:      svc,
-		memory:   memory,
-		hooks:    hooks,
-		streams:  map[string]string{},
-		follow:   true,
-		menuOpen: map[string]*bool{},
+		svc:       svc,
+		agents:    agents,
+		tasks:     tasks,
+		artifacts: artifacts,
+		memory:    memory,
+		hooks:     hooks,
+		streams:   map[string]string{},
+		follow:    true,
+		menuOpen:  map[string]*bool{},
 		groupOpen: map[string]*bool{
 			"pinned":    boolValue(true),
 			"today":     boolValue(true),
@@ -131,6 +154,8 @@ func New(svc contract.AssistantService, memory contract.MemoryService, hooks Hoo
 
 func (p *Page) View(c *ui.Context) {
 	p.refreshBackgroundReports()
+	p.refreshTaskRevisions()
+	p.refreshArtifactRevisions()
 	if !p.shown {
 		p.shown = true
 		p.greetOnLaunch()
@@ -171,14 +196,13 @@ func (p *Page) View(c *ui.Context) {
 	p.deleteMessageModal(c)
 	p.approvalModal(c)
 	p.personaModal(c)
+	p.transferModal(c)
+	p.processDrawer(c)
+	p.artifactDrawer(c)
 	components.MemoryModal(c, components.MemoryModalProps{
 		Service:   p.memory,
 		Open:      &p.memoryOpen,
 		State:     &p.memoryState,
-		EditOpen:  &p.memoryEditOpen,
-		EditID:    &p.memoryEditID,
-		EditValue: &p.memoryEditValue,
-		EditErr:   &p.memoryEditErr,
 		ClearOpen: &p.memoryClearOpen,
 		OnChanged: p.reloadMessages,
 	})
@@ -211,6 +235,25 @@ func (p *Page) header(c *ui.Context, panelProgress float32) {
 			})
 
 			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				if p.agents != nil {
+					transferBtn := ui.ButtonBase(c).
+						Width(22).
+						Height(22).
+						Radius(4).
+						AlignItems(ui.Center).
+						Justify(ui.Center).
+						TextColor(t.TextMuted)
+					if transferBtn.Hovered() {
+						transferBtn.Background(t.SurfacePressed).TextColor(t.Text)
+					}
+					transferBtn.Children(func() {
+						components.Icon(c, components.IconSend, 13)
+					})
+					if transferBtn.Tooltip("转交给员工").Clicked() {
+						p.openTransfer()
+					}
+				}
+
 				personaBtn := ui.ButtonBase(c).
 					Width(22).
 					Height(22).
@@ -364,7 +407,26 @@ func (p *Page) greetOnLaunch() {
 }
 
 func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
-	return components.MessageView(c, components.MessageViewProps{
+	if m.MessageType == "task_report" && m.Task != nil {
+		task := *m.Task
+		item := components.TaskCardProps{
+			Title:          task.Title,
+			Assignee:       task.AssigneeName,
+			Status:         task.Status,
+			Content:        m.Content,
+			Artifacts:      m.Artifacts,
+			OnView:         func() { p.openProcess(task.ID) },
+			OnOpenArtifact: p.openArtifact,
+			OnCancel:       func() { p.cancelTask(task.ID) },
+			OnRetry:        func() { p.retryTask(task.ID) },
+		}
+		if p.hooks.OpenAgentChat != nil && task.AssigneeID != "" {
+			item.OnOpenChat = func() { p.hooks.OpenAgentChat(task.AssigneeID) }
+		}
+		return components.TaskCard(c, item)
+	}
+
+	props := components.MessageViewProps{
 		Message:    m,
 		AvatarText: "助手",
 		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
@@ -372,7 +434,335 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 		OnRetry:    func() { p.regenerate(m.ID) },
 		OnDelete:   func() { p.openDeleteMessage(m) },
 		OnMemory:   func() { p.memoryOpen = true },
+	}
+	if len(m.Artifacts) == 0 || p.artifacts == nil {
+		return components.MessageView(c, props)
+	}
+	return ui.Column(c).FillWidth().Gap(6).Children(func() {
+		components.MessageView(c, props)
+		components.ArtifactList(c, m.Artifacts, p.openArtifact)
 	})
+}
+
+// refreshTaskRevisions 在任务状态变化后刷新当前会话，让卡片状态保持最新。
+func (p *Page) refreshTaskRevisions() {
+	if p.tasks == nil {
+		return
+	}
+	revision := p.tasks.TaskRevision()
+	if revision == p.lastTaskRevision || p.streaming(p.activeID) {
+		return
+	}
+	p.lastTaskRevision = revision
+	p.reloadMessages()
+	p.reloadSessions()
+	if p.processOpen {
+		p.reloadProcess()
+	}
+}
+
+// refreshArtifactRevisions 在产物创建或删除后刷新当前会话与任务过程。
+func (p *Page) refreshArtifactRevisions() {
+	if p.artifacts == nil {
+		return
+	}
+	revision := p.artifacts.ArtifactRevision()
+	if revision == p.lastArtifactRevision || p.streaming(p.activeID) {
+		return
+	}
+	p.lastArtifactRevision = revision
+	p.reloadMessages()
+	if p.processOpen {
+		p.reloadProcess()
+	}
+}
+
+// openProcess 打开任务线程的只读过程抽屉。
+func (p *Page) openProcess(taskID string) {
+	if p.tasks == nil {
+		return
+	}
+	p.processTask = p.tasks.Task(taskID)
+	p.processMessages = p.tasks.TaskMessages(taskID)
+	p.processOpen = true
+}
+
+func (p *Page) reloadProcess() {
+	if p.tasks == nil || p.processTask.ID == "" {
+		return
+	}
+	p.processTask = p.tasks.Task(p.processTask.ID)
+	p.processMessages = p.tasks.TaskMessages(p.processTask.ID)
+}
+
+func (p *Page) processDrawer(c *ui.Context) {
+	t := c.Theme()
+	if !p.processOpen {
+		return
+	}
+
+	avatar := firstRuneOr(p.processTask.AssigneeName, "员")
+	components.Drawer(c, components.DrawerProps{
+		Open:  &p.processOpen,
+		Title: "任务过程",
+		Width: 520,
+	}, func() {
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Text(c, p.processTask.Title).FontSize(14).Bold().MaxLines(2)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				components.TaskStatusChip(c, p.processTask.Status)
+				if p.processTask.AssigneeName != "" {
+					ui.Text(c, p.processTask.AssigneeName).FontSize(11).TextColor(t.TextMuted)
+				}
+			})
+			if p.processTask.Brief != "" {
+				ui.Text(c, p.processTask.Brief).FontSize(12).TextColor(t.TextMuted).MaxLines(6)
+			}
+		})
+
+		if len(p.processMessages) == 0 {
+			components.EmptyState(c, components.EmptyProps{
+				Icon:  components.IconMessage,
+				Title: "还没有执行记录",
+				Hint:  "任务开始执行后，这里会显示员工的完整工作过程。",
+			})
+			return
+		}
+		for _, message := range p.processMessages {
+			p.processMessage(c, message, avatar)
+		}
+	})
+}
+
+// processMessage 渲染任务线程的一条记录；派发消息按内部说明展示，不套用户气泡。
+func (p *Page) processMessage(c *ui.Context, m contract.ChatMessage, avatar string) {
+	if m.MessageType == "task_dispatch" {
+		t := c.Theme()
+		ui.Column(c).
+			FillWidth().
+			Padding(10).
+			Gap(4).
+			Radius(theme.RadiusSM).
+			Background(t.SurfaceHover).
+			Children(func() {
+				ui.Text(c, "主助手派发任务").FontSize(11).Bold().TextColor(t.TextMuted)
+				ui.Text(c, m.Content).FontSize(12).TextColor(t.Text)
+			})
+		return
+	}
+
+	components.MessageView(c, components.MessageViewProps{
+		Message:    m,
+		AvatarText: avatar,
+	})
+	if p.artifacts != nil && len(m.Artifacts) > 0 {
+		components.ArtifactList(c, m.Artifacts, p.openArtifact)
+	}
+}
+
+// openArtifact 打开产物预览抽屉。
+func (p *Page) openArtifact(id string) {
+	if p.artifacts == nil || id == "" {
+		return
+	}
+	p.viewer.Open(p.artifacts, id)
+	p.artifactOpen = true
+}
+
+// artifactDrawer 渲染预览抽屉与删除确认。
+func (p *Page) artifactDrawer(c *ui.Context) {
+	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
+		Open:   &p.artifactOpen,
+		Viewer: p.viewer,
+		OnDelete: func() {
+			p.artifactDeleteOpen = true
+		},
+	})
+	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
+		p.deleteArtifact(p.viewer.Detail.ID)
+	})
+}
+
+func (p *Page) deleteArtifact(id string) {
+	if p.artifacts == nil || id == "" {
+		return
+	}
+	go func() {
+		err := p.artifacts.DeleteArtifact(id)
+		p.update(func() {
+			if err != nil {
+				p.sendErr = err.Error()
+				return
+			}
+			p.artifactOpen = false
+			p.viewer = components.ArtifactViewer{}
+			p.reloadMessages()
+			p.reloadProcess()
+		})
+	}()
+}
+
+func (p *Page) cancelTask(taskID string) {
+	if p.tasks == nil {
+		return
+	}
+	// 取消运行中的任务要等线程收尾，放到后台避免卡住当前帧。
+	go func() {
+		err := p.tasks.CancelTask(taskID)
+		p.update(func() {
+			if err != nil {
+				p.sendErr = err.Error()
+				return
+			}
+			p.reloadMessages()
+			p.reloadProcess()
+		})
+	}()
+}
+
+func (p *Page) retryTask(taskID string) {
+	if p.tasks == nil {
+		return
+	}
+	go func() {
+		err := p.tasks.RetryTask(taskID)
+		p.update(func() {
+			if err != nil {
+				p.sendErr = err.Error()
+				return
+			}
+			p.reloadMessages()
+			p.reloadProcess()
+		})
+	}()
+}
+
+// openTransfer 打开转交对话框并加载员工列表。
+func (p *Page) openTransfer() {
+	p.transferAgents = nil
+	if p.agents != nil {
+		p.transferAgents = p.agents.Agents()
+	}
+	p.transferAgentID = ""
+	if len(p.transferAgents) > 0 {
+		p.transferAgentID = p.transferAgents[0].ID
+	}
+	p.transferErr = ""
+	p.transferOpen = true
+}
+
+// transferModal 让用户显式选择员工并填写任务，直接创建后台任务。
+func (p *Page) transferModal(c *ui.Context) {
+	t := c.Theme()
+	canSend := p.transferAgentID != "" && strings.TrimSpace(p.transferDraft) != ""
+
+	components.Modal(c, components.ModalProps{
+		Open:  &p.transferOpen,
+		Title: "转交给员工",
+		Width: 520,
+		Footer: func() {
+			if components.Button(c, components.ButtonProps{
+				Label:   "取消",
+				Variant: components.ButtonSecondary,
+			}).Clicked() {
+				p.transferOpen = false
+			}
+			if components.Button(c, components.ButtonProps{
+				Label:    "转交",
+				Variant:  components.ButtonPrimary,
+				Disabled: !canSend,
+			}).Clicked() {
+				p.submitTransfer()
+			}
+		},
+	}, func() {
+		if len(p.transferAgents) == 0 {
+			components.EmptyState(c, components.EmptyProps{
+				Icon:  components.IconAgents,
+				Title: "还没有可用的员工",
+				Hint:  "先在 agents 页创建一位员工，再回来转交任务。",
+			})
+			return
+		}
+
+		ui.Text(c, "选择员工").FontSize(12).Bold().TextColor(t.TextMuted)
+		ui.Scroll(c).FillWidth().Height(160).Children(func() {
+			ui.Column(c).FillWidth().Gap(4).Children(func() {
+				for _, agent := range p.transferAgents {
+					p.transferAgentRow(c, agent)
+				}
+			})
+		})
+
+		ui.Text(c, "任务说明").FontSize(12).Bold().TextColor(t.TextMuted)
+		ui.TextAreaBase(c, &p.transferDraft).
+			Placeholder("说明要交给它完成的事情").
+			Lines(4, 8).
+			FillWidth().
+			MaxLength(2000)
+
+		if p.transferErr != "" {
+			ui.Text(c, p.transferErr).FontSize(12).TextColor(t.Danger)
+		}
+	})
+}
+
+func (p *Page) transferAgentRow(c *ui.Context, agent contract.AgentInfo) {
+	t := c.Theme()
+	selected := agent.ID == p.transferAgentID
+
+	row := ui.ButtonBase(c).
+		FillWidth().
+		Padding(8).
+		Gap(8).
+		Radius(theme.RadiusSM).
+		AlignItems(ui.Center)
+	if selected {
+		row.Background(t.Accent.Alpha(0.1))
+	} else if row.Hovered() {
+		row.Background(t.SurfaceHover)
+	}
+	row.Children(func() {
+		components.Avatar(c, agent.Name, 24)
+		ui.Column(c).Gap(1).Grow(1).Children(func() {
+			ui.Text(c, agent.Name).FontSize(13).Bold().MaxLines(1)
+			desc := agent.Description
+			if desc == "" {
+				desc = "未填写简介"
+			}
+			ui.Text(c, desc).FontSize(11).TextColor(t.TextMuted).MaxLines(1)
+		})
+		if selected {
+			components.Chip(c, "已选择", components.ToneBrand)
+		}
+	})
+	if row.Clicked() {
+		p.transferAgentID = agent.ID
+		p.transferErr = ""
+	}
+}
+
+func (p *Page) submitTransfer() {
+	if p.tasks == nil {
+		p.transferErr = "任务服务未启用"
+		return
+	}
+	if p.activeID == "" {
+		p.transferErr = "请先打开一个会话"
+		return
+	}
+	brief := strings.TrimSpace(p.transferDraft)
+	if p.transferAgentID == "" || brief == "" {
+		p.transferErr = "请选择员工并填写任务说明"
+		return
+	}
+	if _, err := p.tasks.DispatchTask(p.transferAgentID, brief, p.activeID); err != nil {
+		p.transferErr = err.Error()
+		return
+	}
+	p.transferOpen = false
+	p.transferDraft = ""
+	p.transferErr = ""
 }
 
 func (p *Page) composer(c *ui.Context) {
@@ -887,11 +1277,11 @@ func (p *Page) approvalModal(c *ui.Context) {
 		args = "无"
 	}
 	text := fmt.Sprintf("助手请求执行危险工具「%s」，参数：%s。是否允许本次执行？", p.approvalTool, args)
-	// 「拒绝」放在最后，回车默认不执行危险操作。
-	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "允许", "拒绝") {
-	case 0:
-		p.resolveApproval(true)
+	// 取消在左、确定在右，与其它确认弹窗保持一致。
+	switch ui.AlertDialog(c, &p.approvalOpen, "确认工具执行", text, "拒绝", "允许") {
 	case 1:
+		p.resolveApproval(true)
+	case 0:
 		p.resolveApproval(false)
 	}
 }
@@ -1201,4 +1591,12 @@ func (p *Page) modelID() string {
 
 func boolValue(v bool) *bool {
 	return &v
+}
+
+func firstRuneOr(text, fallback string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return fallback
+	}
+	return string(runes[0])
 }

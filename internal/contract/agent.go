@@ -66,6 +66,10 @@ type AgentService interface {
 
 	// Send 追加用户消息并开始生成回复；群聊回复带发送者信息。
 	Send(conversationID, text, modelID string) (messageID string, events <-chan ChatEvent, err error)
+	// GroupRevision 返回群聊协作版本号，UI 据此刷新成员发言。
+	GroupRevision() uint64
+	// GroupBusy 判断指定群聊是否仍在进行协作轮次。
+	GroupBusy(conversationID string) bool
 	// Regenerate 重新生成指定助手消息，仅演示剧本覆盖的会话支持。
 	Regenerate(conversationID, messageID string) (events <-chan ChatEvent, err error)
 	// DeleteMessage 删除一条消息；正在生成的消息会先停止。

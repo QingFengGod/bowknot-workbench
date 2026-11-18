@@ -197,6 +197,29 @@ func TestPluginAuthorization(t *testing.T) {
 	}
 }
 
+func TestTaskToolsOnlyForMainAssistant(t *testing.T) {
+	svc := newTestService(t, testStore(t), nil)
+	builtin := append(AgentHubToolSpecs(), TaskToolSpecs()...)
+	svc.RegisterBuiltin(builtin...)
+
+	ctx := context.Background()
+	for _, id := range []string{RunAgentToolID, ListTasksToolID, CancelTaskToolID} {
+		if _, err := svc.Execute(ctx, id, "agent-1", "", ""); !errors.Is(err, ErrNotAuthorized) {
+			t.Fatalf("员工调用 %s 未被拒绝：%v", id, err)
+		}
+	}
+
+	// 员工的可选工具里不应出现 Agent 管理与任务工具。
+	for _, spec := range svc.Available(ctx, "agent-1") {
+		if IsAgentHubTool(spec.ID) || IsTaskTool(spec.ID) {
+			t.Fatalf("员工可选工具里出现越权工具：%s", spec.ID)
+		}
+	}
+	if !IsTaskTool(ListTasksToolID) || IsTaskTool(RunAgentToolID) {
+		t.Fatal("IsTaskTool 判断不正确")
+	}
+}
+
 func TestAvailableFiltersUnauthorized(t *testing.T) {
 	svc := newTestService(t, testStore(t), nil)
 
@@ -220,6 +243,22 @@ func TestAvailableFiltersUnauthorized(t *testing.T) {
 	}
 	if !authorized["plugin:plugin-p/p1"] {
 		t.Fatalf("已授权 Agent 缺少插件工具：%+v", authorized)
+	}
+}
+
+func TestAvailablePrioritizesMemoryTools(t *testing.T) {
+	svc := newTestService(t, testStore(t), nil)
+	svc.RegisterBuiltin(append(MemoryToolSpecs(), AgentHubToolSpecs()...)...)
+
+	specs := svc.Available(context.Background(), MainAssistantAgentID)
+	want := []string{RememberToolID, SearchMemoryToolID, UpdateMemoryToolID, ForgetMemoryToolID}
+	if len(specs) < len(want) {
+		t.Fatalf("可用工具数量 = %d, want >= %d", len(specs), len(want))
+	}
+	for i, id := range want {
+		if specs[i].ID != id {
+			t.Fatalf("第 %d 个工具 = %s, want %s", i, specs[i].ID, id)
+		}
 	}
 }
 
