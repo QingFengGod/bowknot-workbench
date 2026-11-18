@@ -82,11 +82,18 @@ type ChatSession struct {
 	UpdatedAt int64 `json:"updatedAt"`
 }
 
-// ChatModel 是可选模型。
+// ChatModel 是可选模型。ID 是内部 key（providerId/modelId）。
 type ChatModel struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// ProviderName 是所属服务商名称，用于选择器副标题。
+	ProviderName string `json:"providerName,omitempty"`
+	// Vision 标记模型是否支持图片理解，本期只展示。
+	Vision bool `json:"vision,omitempty"`
+	// ContextTokens / MaxOutputTokens 为 0 表示未填写。
+	ContextTokens   int `json:"contextTokens,omitempty"`
+	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
 }
 
 // ChatEventType 标记流式事件类型；空值等价于普通文本事件。

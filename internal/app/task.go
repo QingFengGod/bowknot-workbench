@@ -52,6 +52,8 @@ type TaskService struct {
 	provider  llm.Provider
 	reports   *ReportService
 	memory    *MemoryService
+	// settings 为 nil 时使用内置默认值，便于测试直接构造服务。
+	settings *SettingsService
 
 	mu       sync.Mutex
 	queues   map[string][]string
@@ -99,6 +101,11 @@ func NewTaskService(st *store.Store, logger *slog.Logger, provider llm.Provider,
 // SetMemory 注入长期记忆服务；任务结束后会写入一条结果快照。
 func (s *TaskService) SetMemory(memory *MemoryService) {
 	s.memory = memory
+}
+
+// SetSettings 注入运行设置；为 nil 时回退内置默认值。
+func (s *TaskService) SetSettings(settings *SettingsService) {
+	s.settings = settings
 }
 
 // Shutdown 停止调度并等待在途任务收尾；不等待汇报补写，避免阻塞退出。
@@ -376,8 +383,17 @@ func (s *TaskService) loop() {
 // schedule 按员工串行、全局并发的规则认领排队任务。
 func (s *TaskService) schedule() {
 	for {
+		// 每次认领都读取当前并发上限，调小后不再派发新任务。
+		limit := maxTaskActive
+		if s.settings != nil {
+			limit = s.settings.Task().MaxConcurrent
+		}
+		if limit <= 0 {
+			limit = maxTaskActive
+		}
+
 		s.mu.Lock()
-		if s.closed || s.active >= maxTaskActive {
+		if s.closed || s.active >= limit {
 			s.mu.Unlock()
 			return
 		}
@@ -495,7 +511,14 @@ func (s *TaskService) execute(taskID, assignee string) {
 		return
 	}
 
-	timer := time.NewTimer(taskTimeout)
+	timeout := taskTimeout
+	if s.settings != nil {
+		timeout = time.Duration(s.settings.Task().TimeoutMinutes) * time.Minute
+	}
+	if timeout <= 0 {
+		timeout = taskTimeout
+	}
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	var (
@@ -556,7 +579,14 @@ func (s *TaskService) complete(task domain.Task, messageID, content, errText str
 
 // scheduleAutoRetry 对可恢复错误安排一次延迟重试；返回 true 表示已排队。
 func (s *TaskService) scheduleAutoRetry(task domain.Task, errText string) bool {
-	if task.Attempt+1 >= maxTaskAttempts || !isRetryableTaskError(errText) {
+	attempts := maxTaskAttempts
+	if s.settings != nil {
+		attempts = s.settings.Task().MaxAttempts
+	}
+	if attempts <= 0 {
+		attempts = maxTaskAttempts
+	}
+	if task.Attempt+1 >= attempts || !isRetryableTaskError(errText) {
 		return false
 	}
 	s.mu.Lock()
@@ -576,7 +606,7 @@ func (s *TaskService) scheduleAutoRetry(task domain.Task, errText string) bool {
 	}
 	s.bump()
 
-	delay := taskRetryDelay(task.Attempt)
+	delay := s.retryDelay(task.Attempt)
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -596,7 +626,22 @@ func (s *TaskService) scheduleAutoRetry(task domain.Task, errText string) bool {
 	return true
 }
 
-func taskRetryDelay(attempt int) time.Duration {
+// retryDelay 返回第 attempt 次失败后的退避间隔。
+// 未注入设置时沿用包级变量，测试可以把它改成毫秒级。
+func (s *TaskService) retryDelay(attempt int) time.Duration {
+	if s.settings != nil {
+		delays := s.settings.Task().RetryDelaysSeconds
+		if len(delays) == 0 {
+			return 0
+		}
+		if attempt < 0 {
+			attempt = 0
+		}
+		if attempt >= len(delays) {
+			attempt = len(delays) - 1
+		}
+		return time.Duration(delays[attempt]) * time.Second
+	}
 	if attempt >= 0 && attempt < len(taskRetryDelays) {
 		return taskRetryDelays[attempt]
 	}

@@ -27,6 +27,8 @@ type AgentService struct {
 	memory    *MemoryService
 	artifacts *ArtifactService
 	groups    *GroupService
+	// settings 为 nil 时使用内置默认值，便于测试直接构造服务。
+	settings *SettingsService
 	// models 是启动时从网关缓存的可选模型，UI 只从这里取列表。
 	models []contract.ChatModel
 }
@@ -56,6 +58,11 @@ func (s *AgentService) SetMemory(memory *MemoryService) {
 // SetArtifacts 注入产物服务，用于消息读取时附加产物摘要。
 func (s *AgentService) SetArtifacts(artifacts *ArtifactService) {
 	s.artifacts = artifacts
+}
+
+// SetSettings 注入运行设置；为 nil 时回退内置默认值。
+func (s *AgentService) SetSettings(settings *SettingsService) {
+	s.settings = settings
 }
 
 // SetGroups 注入群聊编排服务，由 main 在 GroupService 创建后调用。
@@ -702,7 +709,7 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 		item, err := s.store.Agents.Get(ctx, conversation.OwnerID)
 		if err != nil {
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
-			req = llm.ChatRequest{System: defaultAgentSystemPrompt}
+			req = llm.ChatRequest{System: promptWithGlobal(defaultAgentSystemPrompt, s.settings)}
 		} else {
 			req = llm.ChatRequest{System: s.agentSystemPrompt(item), Model: item.ModelID}
 		}
@@ -767,6 +774,7 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 		approvals:     s.approvals,
 		agentID:       agentID,
 		memoryWritten: &memoryWritten,
+		maxToolRounds: toolRoundLimit(s.settings),
 		onFinish: func() {
 			if in.Finished != nil {
 				close(in.Finished)
@@ -821,7 +829,7 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 		item, err := s.store.Agents.Get(ctx, conversation.OwnerID)
 		if err != nil {
 			s.logger.Warn("读取 Agent 人设失败，使用默认人设", "agent", conversation.OwnerID, "error", err)
-			req = llm.ChatRequest{System: defaultAgentSystemPrompt}
+			req = llm.ChatRequest{System: promptWithGlobal(defaultAgentSystemPrompt, s.settings)}
 		} else {
 			req = llm.ChatRequest{System: s.agentSystemPrompt(item), Model: item.ModelID}
 		}
@@ -878,6 +886,7 @@ func (s *AgentService) Regenerate(conversationID, messageID string) (<-chan cont
 		approvals:     s.approvals,
 		agentID:       agentID,
 		memoryWritten: &memoryWritten,
+		maxToolRounds: toolRoundLimit(s.settings),
 	})
 	return events, nil
 }
@@ -913,9 +922,18 @@ const maxContextTasks = 8
 // taskContextBlock 把员工自己的历史任务摘要注入直聊提示词。
 // 记录只来自该员工的任务表，不涉及用户全局记忆或其它会话内容。
 func (s *AgentService) taskContextBlock(agentID string) string {
+	limit := maxContextTasks
+	if s.settings != nil {
+		limit = s.settings.Memory().ContextTaskLimit
+	}
+	// 0 表示不注入历史任务，直接跳过，避免把 0 当成 store 的默认上限。
+	if limit <= 0 {
+		return ""
+	}
+
 	items, err := s.store.Tasks.List(context.Background(), store.TaskFilter{
 		AssigneeID: agentID,
-		Limit:      maxContextTasks,
+		Limit:      limit,
 	})
 	if err != nil || len(items) == 0 {
 		return ""
@@ -952,7 +970,7 @@ func (s *AgentService) agentSystemPrompt(item domain.Agent) string {
 	} else {
 		block += "\n对用户的称呼没有指定，请直接用「你」，不要自行使用「老板」「亲爱的」等称呼。"
 	}
-	return block + "\n\n" + globalRules + memoryToolGuide + memoryCheckGuide
+	return promptWithGlobal(block+"\n\n"+globalRules+memoryToolGuide, s.settings)
 }
 
 // leaderTitle 返回子 Agent 对主助手的固定称呼。
@@ -1014,24 +1032,27 @@ func (s *AgentService) groupMainPrompt(group domain.Group) string {
 		block = "你是用户的私人助手。"
 	}
 
-	return block + "\n\n" + globalRules + memoryToolGuide + memoryCheckGuide + "\n\n" +
-		"你是群聊「" + group.Name + "」的群主「" + s.mainDisplayName() + "」。\n" +
-		"群成员：\n" + list + "\n\n" +
-		"协作规则：\n" +
-		"1. 用户发言后，先判断是否需要成员参与；需要时在回复中用 @成员名 点名，可以一次点多个。\n" +
-		"2. 被点名的成员会在群里依次发言；单条用户消息最多进行 3 轮成员讨论，不要重复点名已经发言的成员，也不要点名群主。\n" +
-		"3. 成员讨论结束后，系统会要求你面向用户给出最终答复；如果不需要成员参与，直接回答用户。\n" +
-		"4. 所有协作只发生在当前群聊里，不要私聊成员，也不要虚构成员的发言。\n" +
-		"5. 用户直接 @ 成员时不要抢答，也不要用成员的口吻替他们发言；只用一句话确认，把发言权交给成员。\n" +
-		"6. 成员已经直接回答用户时，不要复述或总结成员的内容。"
+	rounds := groupMaxRounds(s.settings)
+	return promptWithGlobal(block+"\n\n"+globalRules+memoryToolGuide+"\n\n"+
+		"你是群聊「"+group.Name+"」的群主「"+s.mainDisplayName()+"」。\n"+
+		"群成员：\n"+list+"\n\n"+
+		"协作规则：\n"+
+		"1. 用户发言后，先判断是否需要成员参与；需要时在回复中用 @成员名 点名，可以一次点多个。\n"+
+		fmt.Sprintf("2. 被点名的成员会在群里依次发言；单条用户消息最多进行 %d 轮成员讨论，不要重复点名已经发言的成员，也不要点名群主。\n", rounds)+
+		"3. 成员讨论结束后，系统会要求你面向用户给出最终答复；如果不需要成员参与，直接回答用户。\n"+
+		"4. 所有协作只发生在当前群聊里，不要私聊成员，也不要虚构成员的发言。\n"+
+		"5. 用户直接 @ 成员时不要抢答，也不要用成员的口吻替他们发言；只用一句话确认，把发言权交给成员。\n"+
+		"6. 成员已经直接回答用户时，不要复述或总结成员的内容。", s.settings)
 }
 
 // groupMemberGuide 是成员在群内发言时的补充规则。
 func (s *AgentService) groupMemberGuide(group domain.Group, member domain.Agent) string {
-	return "【群聊协作】你是群成员「" + member.Name + "」，当前在群聊「" + group.Name + "」中发言。\n" +
-		"群主是「" + s.mainDisplayName() + "」。你只在本群发言，不要私聊其他成员。\n" +
-		"如确实需要其他成员补充，可在回复中用 @成员名 点名；最多 3 轮，不要点名自己、群主或已经发言的成员。\n" +
-		"直接回应用户与群主的讨论，保持简短，不要重复别人的话。"
+	rounds := groupMaxRounds(s.settings)
+	return fmt.Sprintf("【群聊协作】你是群成员「%s」，当前在群聊「%s」中发言。\n"+
+		"群主是「%s」。你只在本群发言，不要私聊其他成员。\n"+
+		"如确实需要其他成员补充，可在回复中用 @成员名 点名；最多 %d 轮，不要点名自己、群主或已经发言的成员。\n"+
+		"直接回应用户与群主的讨论，保持简短，不要重复别人的话。",
+		member.Name, group.Name, s.mainDisplayName(), rounds)
 }
 
 func agentError(err error, id string) error {

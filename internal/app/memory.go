@@ -85,6 +85,8 @@ type MemoryService struct {
 	store    *store.Store
 	logger   *slog.Logger
 	provider llm.Provider
+	// settings 为 nil 时使用内置默认值。
+	settings *SettingsService
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -112,7 +114,54 @@ func NewMemoryService(st *store.Store, logger *slog.Logger, provider llm.Provide
 	}
 }
 
-// Start 启动周期摘要任务：启动时补一次，之后按固定间隔检查。
+// SetSettings 注入运行设置；为 nil 时回退内置默认值。
+func (m *MemoryService) SetSettings(settings *SettingsService) {
+	m.settings = settings
+}
+
+// digestInterval 返回后台摘要间隔；每次重新挂定时器时读取，
+// 修改设置后下一周期生效。
+func (m *MemoryService) digestInterval() time.Duration {
+	if m.settings == nil {
+		return memoryDigestInterval
+	}
+	hours := m.settings.Memory().DigestIntervalHours
+	if hours <= 0 {
+		return memoryDigestInterval
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// recentDays 返回「最近记忆」的时间窗口。
+func (m *MemoryService) recentDays() int {
+	if m.settings == nil {
+		return memoryRecentDays
+	}
+	days := m.settings.Memory().RecentDays
+	if days <= 0 {
+		return memoryRecentDays
+	}
+	return days
+}
+
+// injectLimits 返回注入条数上限与字符预算。
+func (m *MemoryService) injectLimits() (int, int) {
+	if m.settings == nil {
+		return memoryMaxItems, memoryBudgetRunes
+	}
+	cfg := m.settings.Memory()
+	items := cfg.InjectItems
+	if items <= 0 {
+		items = memoryMaxItems
+	}
+	budget := cfg.InjectBudgetRunes
+	if budget <= 0 {
+		budget = memoryBudgetRunes
+	}
+	return items, budget
+}
+
+// Start 启动周期摘要任务：启动时补一次，之后按设置间隔检查。
 // 由 main 在装配完成后调用，测试可以只调用 ensureDigests 而不启动循环。
 func (m *MemoryService) Start() {
 	if m == nil {
@@ -122,15 +171,15 @@ func (m *MemoryService) Start() {
 	go func() {
 		defer m.wg.Done()
 		m.ensureDigests()
-		ticker := time.NewTicker(memoryDigestInterval)
-		defer ticker.Stop()
 		for {
+			timer := time.NewTimer(m.digestInterval())
 			select {
 			case <-m.ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
-				m.ensureDigests()
+			case <-timer.C:
 			}
+			m.ensureDigests()
 		}
 	}()
 }
@@ -277,7 +326,7 @@ func (m *MemoryService) Search(ctx context.Context, agentID, query, fromDay, toD
 	}
 
 	now := m.now()
-	recentSince := now.AddDate(0, 0, -memoryRecentDays).UnixMilli()
+	recentSince := now.AddDate(0, 0, -m.recentDays()).UnixMilli()
 	tokens := questionKeywords(query)
 
 	seen := make(map[string]bool)
@@ -504,7 +553,7 @@ func (m *MemoryService) PromptBlock(agentID, question string) string {
 	}
 
 	now := m.now()
-	recentSince := now.AddDate(0, 0, -memoryRecentDays).UnixMilli()
+	recentSince := now.AddDate(0, 0, -m.recentDays()).UnixMilli()
 	tokens := questionKeywords(question)
 
 	items, err := m.store.Memories.ListActive(context.Background(), owner.scope, owner.owner, 500)
@@ -532,16 +581,17 @@ func (m *MemoryService) PromptBlock(agentID, question string) string {
 		return scored[i].score > scored[j].score
 	})
 
-	selected := make([]domain.Memory, 0, memoryMaxItems)
-	usedIDs := make([]string, 0, memoryMaxItems)
+	maxItems, budget := m.injectLimits()
+	selected := make([]domain.Memory, 0, maxItems)
+	usedIDs := make([]string, 0, maxItems)
 	used := 0
 	for _, candidate := range scored {
-		if len(selected) >= memoryMaxItems {
+		if len(selected) >= maxItems {
 			break
 		}
 		line := memoryLine(candidate.item)
 		cost := utf8.RuneCountInString(line) + 1
-		if used+cost > memoryBudgetRunes {
+		if used+cost > budget {
 			continue
 		}
 		used += cost

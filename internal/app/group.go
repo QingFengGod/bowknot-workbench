@@ -24,6 +24,8 @@ type GroupService struct {
 	store  *store.Store
 	logger *slog.Logger
 	agents *AgentService
+	// settings 为 nil 时使用内置默认值。
+	settings *SettingsService
 
 	mu    sync.Mutex
 	turns map[string]*groupTurn
@@ -55,6 +57,23 @@ func NewGroupService(st *store.Store, logger *slog.Logger, agents *AgentService)
 		logger = slog.Default()
 	}
 	return &GroupService{store: st, logger: logger, agents: agents, turns: map[string]*groupTurn{}}
+}
+
+// SetSettings 注入运行设置；为 nil 时回退内置默认值。
+func (g *GroupService) SetSettings(settings *SettingsService) {
+	g.settings = settings
+}
+
+// groupMaxRounds 返回群聊成员发言轮次上限。
+func groupMaxRounds(settings *SettingsService) int {
+	if settings == nil {
+		return maxGroupRounds
+	}
+	rounds := settings.Group().MaxRounds
+	if rounds <= 0 {
+		return maxGroupRounds
+	}
+	return rounds
 }
 
 // Revision 返回群聊协作版本号。
@@ -229,7 +248,8 @@ func (g *GroupService) orchestrate(conversationID string, group domain.Group, us
 	spoken := make(map[string]bool, len(members))
 	names := make([]string, 0, len(members))
 
-	for round := 1; round <= maxGroupRounds && len(pending) > 0; round++ {
+	roundLimit := groupMaxRounds(g.settings)
+	for round := 1; round <= roundLimit && len(pending) > 0; round++ {
 		next := make([]string, 0, len(pending))
 		for _, memberID := range pending {
 			if turn.stopped() {
@@ -240,7 +260,7 @@ func (g *GroupService) orchestrate(conversationID string, group domain.Group, us
 			}
 			spoken[memberID] = true
 
-			content, ok := g.runMember(conversationID, group, memberID, round)
+			content, ok := g.runMember(conversationID, group, memberID, round, roundLimit)
 			if !ok {
 				continue
 			}
@@ -270,11 +290,11 @@ func (g *GroupService) orchestrate(conversationID string, group domain.Group, us
 }
 
 // runMember 让一位成员在群内发言，返回其最终内容。
-func (g *GroupService) runMember(conversationID string, group domain.Group, agentID string, round int) (string, bool) {
+func (g *GroupService) runMember(conversationID string, group domain.Group, agentID string, round, roundLimit int) (string, bool) {
 	_, events, err := g.agents.StartTurn(TurnInput{
 		ConversationID: conversationID,
 		GroupAgentID:   agentID,
-		SystemExtra:    g.memberExtra(group, agentID, round),
+		SystemExtra:    g.memberExtra(group, agentID, round, roundLimit),
 		SenderKind:     domain.SenderAgent,
 		MessageType:    domain.MessageTypeChat,
 		Visibility:     domain.VisibilityUser,
@@ -319,13 +339,13 @@ func (g *GroupService) runSummary(conversationID string, names []string) {
 	}
 }
 
-func (g *GroupService) memberExtra(group domain.Group, agentID string, round int) string {
+func (g *GroupService) memberExtra(group domain.Group, agentID string, round, roundLimit int) string {
 	name := "成员"
 	if agent, err := g.store.Agents.Get(context.Background(), agentID); err == nil && strings.TrimSpace(agent.Name) != "" {
 		name = agent.Name
 	}
-	lastRound := round >= maxGroupRounds
-	extra := fmt.Sprintf("【群聊协作】你是群成员「%s」，当前是第 %d/%d 轮成员发言。请针对群里的讨论给出你的专业意见。", name, round, maxGroupRounds)
+	lastRound := round >= roundLimit
+	extra := fmt.Sprintf("【群聊协作】你是群成员「%s」，当前是第 %d/%d 轮成员发言。请针对群里的讨论给出你的专业意见。", name, round, roundLimit)
 	if lastRound {
 		extra += "\n这是最后一轮，不要再 @ 其他成员。"
 	}

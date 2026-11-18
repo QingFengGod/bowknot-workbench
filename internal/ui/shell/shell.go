@@ -10,6 +10,7 @@ import (
 	"bowknot-workbench/internal/ui/pages/artifacts"
 	"bowknot-workbench/internal/ui/pages/assistant"
 	"bowknot-workbench/internal/ui/pages/plugins"
+	"bowknot-workbench/internal/ui/pages/settings"
 	"bowknot-workbench/internal/ui/pages/tasks"
 	"bowknot-workbench/internal/ui/theme"
 
@@ -27,6 +28,13 @@ type Deps struct {
 	Tasks     contract.TaskService
 	Artifacts contract.ArtifactService
 	Memory    contract.MemoryService
+	Models    contract.ModelConfigService
+	Settings  contract.SettingsService
+	// 数据目录信息供设置页「数据与日志」「关于」展示。
+	DataRoot     string
+	ConfigPath   string
+	DatabasePath string
+	LogsPath     string
 }
 
 type navItem struct {
@@ -44,6 +52,7 @@ var navItems = []navItem{
 	{Route: "/tasks", Label: "任务", Icon: components.IconTasks},
 	{Route: "/artifacts", Label: "产物", Icon: components.IconArtifact},
 	{Route: "/plugins", Label: "插件", Icon: components.IconPlugins},
+	{Route: "/settings", Label: "设置", Icon: components.IconSettings},
 	{Route: "/aigc/generate", Label: "AIGC", Icon: components.IconAIGC},
 }
 
@@ -71,7 +80,25 @@ func New(deps Deps) *Shell {
 		mode:     theme.ModeSystem,
 		launcher: newAppLauncher(),
 	}
+	// 外观以持久化设置为准，首次启动默认跟随系统。
+	if deps.Settings != nil {
+		s.mode = themeMode(deps.Settings.Settings().Appearance.Theme)
+	}
 	agentPage := agents.New(deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, agents.Hooks{Update: s.update})
+	settingsPage := settings.New(settings.Deps{
+		App:          deps.App,
+		Models:       deps.Models,
+		Settings:     deps.Settings,
+		DataRoot:     deps.DataRoot,
+		ConfigPath:   deps.ConfigPath,
+		DatabasePath: deps.DatabasePath,
+		LogsPath:     deps.LogsPath,
+	}, settings.Hooks{
+		Update: s.update,
+		ApplyTheme: func(value string) {
+			s.applyThemeMode(themeMode(value))
+		},
+	})
 	s.native = map[string]pages.Page{
 		"/apps": apps.New(deps.Apps, apps.Hooks{
 			Open:          s.launcher.Open,
@@ -98,6 +125,7 @@ func New(deps Deps) *Shell {
 		"/plugins": plugins.New(deps.Plugins, plugins.Hooks{
 			SelectPackage: selectPluginPackage,
 		}),
+		"/settings": settingsPage,
 	}
 	s.current = s.native[s.active]
 	return s
@@ -256,7 +284,7 @@ func (s *Shell) themeButton(c *ui.Context) {
 				Label:    it.label,
 				Selected: s.mode == it.mode,
 				OnClick: func() {
-					s.mode = it.mode
+					s.changeTheme(it.mode)
 					s.themeMenuOpen = false
 				},
 				Content: func(c *ui.Context, selected bool) {
@@ -313,10 +341,15 @@ func (s *Shell) rail(c *ui.Context) {
 
 	theme.NormalShadow.Apply(c, rail)
 
+	// 一级导航可能超过窗口最小高度，放进可滚动容器避免底部入口被裁掉。
 	rail.Children(func() {
-		for _, item := range navItems {
-			s.railItem(c, item)
-		}
+		ui.Scroll(c).FillWidth().Grow(1).Children(func() {
+			ui.Column(c).FillWidth().GapY(4).AlignItems(ui.Center).Children(func() {
+				for _, item := range navItems {
+					s.railItem(c, item)
+				}
+			})
+		})
 	})
 }
 
@@ -374,6 +407,47 @@ func (s *Shell) content(c *ui.Context) {
 		ui.Text(c, "该页面建设中").FontSize(15).Bold()
 		ui.Text(c, "工作台将以原生方式实现，敬请期待。").FontSize(12).TextColor(t.TextMuted)
 	})
+}
+
+// applyThemeMode 立即切换外观模式；持久化由调用方决定。
+func (s *Shell) applyThemeMode(mode theme.Mode) {
+	s.mode = mode
+	if s.win != nil {
+		s.win.Invalidate()
+	}
+}
+
+// changeTheme 是标题栏的切换入口：先更新外观，再写回运行设置。
+func (s *Shell) changeTheme(mode theme.Mode) {
+	s.applyThemeMode(mode)
+	if s.deps.Settings == nil {
+		return
+	}
+	next := s.deps.Settings.Settings()
+	next.Appearance.Theme = themeValue(mode)
+	_ = s.deps.Settings.Save(next)
+}
+
+func themeMode(value string) theme.Mode {
+	switch value {
+	case contract.ThemeDark:
+		return theme.ModeDark
+	case contract.ThemeLight:
+		return theme.ModeLight
+	default:
+		return theme.ModeSystem
+	}
+}
+
+func themeValue(mode theme.Mode) string {
+	switch mode {
+	case theme.ModeDark:
+		return contract.ThemeDark
+	case theme.ModeLight:
+		return contract.ThemeLight
+	default:
+		return contract.ThemeSystem
+	}
 }
 
 // update 在主线程修改页面状态并重绘，供页面接收后台流式事件。

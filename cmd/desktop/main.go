@@ -4,13 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"time"
 
 	"bowknot-workbench/internal/app"
 	"bowknot-workbench/internal/backend"
 	"bowknot-workbench/internal/builtin"
 	"bowknot-workbench/internal/infra/config"
-	"bowknot-workbench/internal/infra/llm"
 	pkgs "bowknot-workbench/internal/infra/package"
 	"bowknot-workbench/internal/infra/tool"
 	"bowknot-workbench/internal/platform/lifecycle"
@@ -73,26 +71,20 @@ func main() {
 	}
 	lc.Add("store", func(ctx context.Context) error { return db.Close(ctx) })
 
-	// 网关按配置选择实现：baseUrl 为空时回退到演示用假实现；
-	// 密钥只进入网关，日志里输出脱敏后的值。
-	provider := llm.New(llm.Options{
-		Provider:     cfg.Model.Provider,
-		BaseURL:      cfg.Model.BaseURL,
-		APIKey:       cfg.Model.APIKey,
-		DefaultModel: cfg.Model.DefaultModel,
-	})
-	logger.Info("模型网关已初始化",
-		"provider", cfg.Model.Provider,
-		"baseURL", cfg.Model.BaseURL,
-		"apiKey", config.MaskKey(cfg.Model.APIKey),
-	)
+	// 运行设置存放在 app_meta，保存后立即生效；主题在壳层初始化时读取。
+	settingsSvc := app.NewSettingsService(db, logger)
 
-	// 启动时向网关查询一次模型列表并缓存，避免 UI 每次进入页面都请求外部服务；
-	// 超时或查询失败时退回配置的默认模型。
-	modelCtx, cancelModels := context.WithTimeout(lc.Context(), 10*time.Second)
-	models := app.ResolveModels(modelCtx, provider, cfg.Model.DefaultModel, logger)
-	cancelModels()
-	logger.Info("模型列表已缓存", "count", len(models))
+	// 网关按配置的多个服务商与模型构建路由；没有任何可用服务商时回退演示实现。
+	modelConfig := app.NewModelConfigService(dataPaths.Config, logger)
+	provider := app.NewProviderFromConfig(cfg)
+	chatModels := modelConfig.ChatModels()
+	logger.Info("模型网关已初始化",
+		"providers", len(cfg.Providers),
+		"models", len(chatModels),
+		"defaultModel", modelConfig.DefaultModel(),
+	)
+	// Agent 里可能还存着旧版模型 ID，启动时统一迁移为内部 key。
+	app.ReconcileAgentModels(lc.Context(), db, chatModels, modelConfig.DefaultModel(), logger)
 
 	// 插件进程执行器需要先于安装器创建：覆盖安装或卸载前要释放进程，
 	// 否则 Windows 下可执行文件被占用会导致替换失败。
@@ -150,8 +142,8 @@ func main() {
 
 	assistant := app.NewAssistantService(db, logger, provider, toolSvc, approvals)
 	agents := app.NewAgentService(db, logger, provider, toolSvc, approvals)
-	assistant.SetModels(models)
-	agents.SetModels(models)
+	assistant.SetModels(chatModels)
+	agents.SetModels(chatModels)
 	assistant.SetArtifacts(artifacts)
 	agents.SetArtifacts(artifacts)
 	// 群聊服务负责主助手与成员的 @ 编排、轮次上限与最终汇总。
@@ -166,6 +158,12 @@ func main() {
 	agents.SetMemory(memory)
 	executor.SetMemory(memory)
 	tasks.SetMemory(memory)
+	// 运行参数统一从设置读取：未保存过时使用默认值，保存后即时生效。
+	assistant.SetSettings(settingsSvc)
+	agents.SetSettings(settingsSvc)
+	groups.SetSettings(settingsSvc)
+	tasks.SetSettings(settingsSvc)
+	memory.SetSettings(settingsSvc)
 	memory.Start()
 	lc.Add("assistant", assistant.Shutdown)
 	lc.Add("agents", agents.Shutdown)
@@ -177,14 +175,20 @@ func main() {
 	plugins := app.NewPluginService(db, installer, toolSvc, logger)
 	appCatalog := app.NewAppCatalog(db, installer, toolSvc, logger)
 	desktop := shell.New(shell.Deps{
-		App:       appBackend,
-		Plugins:   plugins,
-		Apps:      appCatalog,
-		Assistant: assistant,
-		Agents:    agents,
-		Tasks:     tasks,
-		Artifacts: artifacts,
-		Memory:    memory,
+		App:          appBackend,
+		Plugins:      plugins,
+		Apps:         appCatalog,
+		Assistant:    assistant,
+		Agents:       agents,
+		Tasks:        tasks,
+		Artifacts:    artifacts,
+		Memory:       memory,
+		Models:       modelConfig,
+		Settings:     settingsSvc,
+		DataRoot:     dataPaths.Root,
+		ConfigPath:   dataPaths.Config,
+		DatabasePath: dataPaths.Database,
+		LogsPath:     dataPaths.Logs,
 	})
 
 	// mygo 在系统强制退出等场景可能直接结束进程，OnQuit 是最后可靠的清理时机。

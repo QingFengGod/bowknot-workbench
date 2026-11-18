@@ -29,6 +29,8 @@ type AssistantService struct {
 	approvals *ApprovalHub
 	memory    *MemoryService
 	artifacts *ArtifactService
+	// settings 为 nil 时使用内置默认值，便于测试直接构造服务。
+	settings *SettingsService
 	// models 是启动时从网关缓存的可选模型，UI 只从这里取列表。
 	models []contract.ChatModel
 	// greeted 保证每次应用启动只主动问候一次。
@@ -62,6 +64,11 @@ func (s *AssistantService) SetMemory(memory *MemoryService) {
 // SetArtifacts 注入产物服务，用于消息读取时附加产物摘要。
 func (s *AssistantService) SetArtifacts(artifacts *ArtifactService) {
 	s.artifacts = artifacts
+}
+
+// SetSettings 注入运行设置；为 nil 时回退内置默认值。
+func (s *AssistantService) SetSettings(settings *SettingsService) {
+	s.settings = settings
 }
 
 // SetModels 注入启动时解析到的真实模型列表。
@@ -384,10 +391,11 @@ func (s *AssistantService) systemPrompt() string {
 		s.logger.Error("读取助手人设失败", "error", err)
 		persona = contract.DefaultAssistantPersona()
 	}
+	base := assistantSystemPrompt
 	if block := personaPrompt(persona); block != "" {
-		return assistantSystemPrompt + "\n\n" + block
+		base += "\n\n" + block
 	}
-	return assistantSystemPrompt
+	return promptWithGlobal(base, s.settings)
 }
 
 // Revision 返回后台消息版本的当前值，UI 用它判断是否需要重新加载。
@@ -577,6 +585,7 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 		approvals:     s.approvals,
 		agentID:       mainAgentID,
 		memoryWritten: &memoryWritten,
+		maxToolRounds: toolRoundLimit(s.settings),
 	})
 	return messageID, events, nil
 }
@@ -670,6 +679,7 @@ func (s *AssistantService) AutoReply(sessionID string) (string, <-chan contract.
 		approvals:     s.approvals,
 		agentID:       mainAgentID,
 		memoryWritten: &memoryWritten,
+		maxToolRounds: toolRoundLimit(s.settings),
 	})
 	return messageID, events, true
 }
@@ -763,6 +773,7 @@ func (s *AssistantService) Regenerate(sessionID, messageID string) (<-chan contr
 		approvals:     s.approvals,
 		agentID:       mainAgentID,
 		memoryWritten: &memoryWritten,
+		maxToolRounds: toolRoundLimit(s.settings),
 	})
 	return events, nil
 }

@@ -50,10 +50,9 @@ const (
 		memoryToolGuide +
 		"你的姓名、性别、年龄、性格、角色或职责、对用户的称呼、其它要求都完全由用户设定，不存在任何不可更改的公司、产品或预设身份。" +
 		"用户要求修改这些信息（包括改名、换称呼、设定角色）时，这是完全允许的，必须立即调用 builtin_update_persona 工具，只传需要修改的字段，不要说不能修改，也不要用预设身份作为拒绝理由。" +
-		"修改成功后，按新的姓名与称呼回应用户。" +
-		memoryCheckGuide
-	defaultAgentSystemPrompt = "你是 bowknot-workbench 里的一个 Agent，请用简洁的中文回复用户。" + globalRules + memoryToolGuide + memoryCheckGuide
-	groupSystemPrompt        = "这是多 Agent 群聊，请以「助理」的身份协调群内成员推进任务，用简洁的中文回复。" + globalRules + memoryToolGuide + memoryCheckGuide
+		"修改成功后，按新的姓名与称呼回应用户。"
+	defaultAgentSystemPrompt = "你是 bowknot-workbench 里的一个 Agent，请用简洁的中文回复用户。" + globalRules + memoryToolGuide
+	groupSystemPrompt        = "这是多 Agent 群聊，请以「助理」的身份协调群内成员推进任务，用简洁的中文回复。" + globalRules + memoryToolGuide
 )
 
 // streamRunner 管理每个会话唯一的生成任务，保证同一会话不会并发写入。
@@ -191,6 +190,8 @@ type genStream struct {
 	memoryWritten *bool
 	// onFinish 在本轮生成完全结束时调用，供群聊编排等待主回复完成。
 	onFinish func()
+	// maxToolRounds 是本次生成的工具轮次上限；0 表示使用默认值。
+	maxToolRounds int
 }
 
 // runGeneration 消费模型网关的流式输出，节流落库并推送 UI 事件。
@@ -293,10 +294,16 @@ func runGeneration(target genStream) {
 		}
 	}
 
+	// 工具轮次上限在每次生成开始时读取，调整设置后下一轮立即生效。
+	limit := target.maxToolRounds
+	if limit <= 0 {
+		limit = maxToolRounds
+	}
+
 	history := append([]llm.Message(nil), target.req.Messages...)
 	for round := 0; ; round++ {
-		if round >= maxToolRounds {
-			finish(domain.MessageFailed, fmt.Sprintf("工具调用超过 %d 轮，已终止本次生成", maxToolRounds))
+		if round >= limit {
+			finish(domain.MessageFailed, fmt.Sprintf("工具调用超过 %d 轮，已终止本次生成", limit))
 			return
 		}
 
