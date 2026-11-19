@@ -59,8 +59,10 @@ type ToolCall struct {
 // Chunk 是流式输出的一次快照。Seq 由 Provider 递增分配，为后续工具调用、
 // 审批事件预留。Delta 为空且没有 Usage、ToolCalls 时只携带结束或错误语义。
 type Chunk struct {
-	Seq       int64
-	Delta     string
+	Seq   int64
+	Delta string
+	// Reasoning 是思维链增量（reasoning_content），与正文分开累积。
+	Reasoning string
 	ToolCalls []ToolCall
 	Usage     *Usage
 	Done      bool

@@ -33,9 +33,11 @@ type ChatMessage struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversationId"`
 	// Seq 是消息在会话内的递增序号，分页时作为游标。
-	Seq       int64          `json:"seq"`
-	Role      ChatRole       `json:"role"`
-	Content   string         `json:"content"`
+	Seq     int64    `json:"seq"`
+	Role    ChatRole `json:"role"`
+	Content string   `json:"content"`
+	// Reasoning 是模型返回的思维链，独立于正文落库。
+	Reasoning string         `json:"reasoning,omitempty"`
 	Status    MessageStatus  `json:"status"`
 	CreatedAt int64          `json:"createdAt"`
 	ToolCalls []ChatToolCall `json:"toolCalls,omitempty"`
@@ -101,6 +103,7 @@ type ChatEventType string
 
 const (
 	ChatEventText       ChatEventType = "text"
+	ChatEventReasoning  ChatEventType = "reasoning"
 	ChatEventToolCall   ChatEventType = "tool_call"
 	ChatEventToolResult ChatEventType = "tool_result"
 	ChatEventApproval   ChatEventType = "approval"
@@ -117,12 +120,16 @@ type ChatEvent struct {
 	Status    MessageStatus
 	Error     string
 	Done      bool
+	// Reasoning 是累计到当前的思维链快照，仅 reasoning 事件携带。
+	Reasoning string
 
 	// 以下字段只在工具调用相关事件里使用。
 	ToolCallID string
 	ToolName   string
 	Arguments  string
 	Result     string
+	// ToolStatus 是工具调用的状态（running / ok / failed / rejected）。
+	ToolStatus string
 	Dangerous  bool
 }
 

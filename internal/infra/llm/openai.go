@@ -293,7 +293,7 @@ func (p *OpenAI) pump(ctx context.Context, body io.ReadCloser, reader *bufio.Rea
 			emit(Chunk{Err: &Error{Kind: KindServer, Message: payload.errMessage}})
 			return
 		}
-		if !emit(Chunk{Delta: payload.delta, ToolCalls: payload.toolCalls, Usage: payload.Usage}) {
+		if !emit(Chunk{Delta: payload.delta, Reasoning: payload.reasoning, ToolCalls: payload.toolCalls, Usage: payload.Usage}) {
 			return
 		}
 	}
@@ -380,8 +380,10 @@ type payloadToolCall struct {
 type sseData struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content      string `json:"content"`
+			Reasoning    string `json:"reasoning_content"`
+			ReasoningAlt string `json:"reasoning"`
+			ToolCalls    []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -398,6 +400,7 @@ type sseData struct {
 	} `json:"error"`
 
 	delta      string
+	reasoning  string
 	toolCalls  []ToolCall
 	errMessage string
 }
@@ -409,6 +412,11 @@ func parseSSEData(data string) (*sseData, error) {
 	}
 	if len(raw.Choices) > 0 {
 		raw.delta = raw.Choices[0].Delta.Content
+		raw.reasoning = raw.Choices[0].Delta.Reasoning
+		if raw.reasoning == "" {
+			// 少数兼容实现把思维链放在 reasoning 字段。
+			raw.reasoning = raw.Choices[0].Delta.ReasoningAlt
+		}
 		for _, call := range raw.Choices[0].Delta.ToolCalls {
 			raw.toolCalls = append(raw.toolCalls, ToolCall{
 				Index:     call.Index,

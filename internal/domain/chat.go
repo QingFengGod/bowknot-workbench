@@ -61,13 +61,15 @@ type Message struct {
 	Seq            int64
 	Role           Role
 	Content        string
-	Status         MessageStatus
-	Error          string
-	SenderName     string
-	SenderAvatar   string
-	Emotion        string
-	MemoryWritten  bool
-	CreatedAt      int64
+	// Reasoning 是模型返回的思维链，独立于正文保存。
+	Reasoning     string
+	Status        MessageStatus
+	Error         string
+	SenderName    string
+	SenderAvatar  string
+	Emotion       string
+	MemoryWritten bool
+	CreatedAt     int64
 	// SenderKind / SenderID 标识发送者身份；MessageType 区分普通消息与任务消息。
 	SenderKind  string
 	SenderID    string

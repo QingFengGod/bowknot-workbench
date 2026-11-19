@@ -8,6 +8,43 @@ import (
 	"bowknot-workbench/internal/domain"
 )
 
+func TestMessageReasoningRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Conversations.Create(ctx, conversation("c1", 10)); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	item := message("m1", "c1", domain.RoleAssistant)
+	item.Content = "最终回答"
+	item.Reasoning = "先读一下上下文"
+	created, err := s.Messages.Append(ctx, item)
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	got, err := s.Messages.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Reasoning != "先读一下上下文" {
+		t.Fatalf("Reasoning = %q, want %q", got.Reasoning, "先读一下上下文")
+	}
+
+	got.Reasoning = "更新后的思考"
+	if err := s.Messages.Update(ctx, got); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	again, err := s.Messages.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() after Update error = %v", err)
+	}
+	if again.Reasoning != "更新后的思考" {
+		t.Fatalf("Reasoning after Update = %q, want %q", again.Reasoning, "更新后的思考")
+	}
+}
+
 func TestMessageListPage(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

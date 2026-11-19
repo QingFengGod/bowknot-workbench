@@ -54,8 +54,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := first.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("schema version = %d, want 11", version)
 	}
 	var tables int
 	if err := first.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation'`).Scan(&tables); err != nil {
@@ -78,8 +78,8 @@ func TestOpenAndMigrationIdempotent(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("applied migrations = %d, want 10", count)
+	if count != 11 {
+		t.Fatalf("applied migrations = %d, want 11", count)
 	}
 }
 

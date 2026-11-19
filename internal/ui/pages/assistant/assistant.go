@@ -40,6 +40,8 @@ type Page struct {
 
 	activeID string
 	messages []contract.ChatMessage
+	// timeline 按消息 ID 保存思考与工具步骤，进程内一直保留。
+	timeline *components.Timeline
 	// lastReportRevision 记录已处理的后台汇报版本，避免每帧重复加载。
 	lastReportRevision uint64
 	// 消息分页：oldestSeq 是已加载消息的最小 seq，hasMore 表示还有更早的消息。
@@ -133,6 +135,7 @@ func New(svc contract.AssistantService, agents contract.AgentService, tasks cont
 		memory:    memory,
 		hooks:     hooks,
 		streams:   map[string]string{},
+		timeline:  components.NewTimeline(),
 		follow:    true,
 		menuOpen:  map[string]*bool{},
 		groupOpen: map[string]*bool{
@@ -427,13 +430,17 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	}
 
 	props := components.MessageViewProps{
-		Message:    m,
-		AvatarText: "助手",
-		ShowRetry:  m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
-		OnStop:     func() { p.stop(m.ConversationID) },
-		OnRetry:    func() { p.regenerate(m.ID) },
-		OnDelete:   func() { p.openDeleteMessage(m) },
-		OnMemory:   func() { p.memoryOpen = true },
+		Message:      m,
+		AvatarText:   "助手",
+		ShowRetry:    m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
+		Steps:        p.timeline.Steps(m.ID),
+		StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+		ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
+		ToolsOpen:    p.timeline.ToolsOpen(m.ID),
+		OnStop:       func() { p.stop(m.ConversationID) },
+		OnRetry:      func() { p.regenerate(m.ID) },
+		OnDelete:     func() { p.openDeleteMessage(m) },
+		OnMemory:     func() { p.memoryOpen = true },
 	}
 	if len(m.Artifacts) == 0 || p.artifacts == nil {
 		return components.MessageView(c, props)
@@ -1220,11 +1227,18 @@ func (p *Page) consume(sessionID string, events <-chan contract.ChatEvent) {
 
 // applyEvent 用后端快照覆盖消息，避免重复拼接。
 func (p *Page) applyEvent(sessionID string, ev contract.ChatEvent) {
-	if ev.Type == contract.ChatEventApproval {
+	switch ev.Type {
+	case contract.ChatEventApproval:
 		p.openApproval(ev)
 		return
-	}
-	if ev.Type == contract.ChatEventToolCall || ev.Type == contract.ChatEventToolResult {
+	case contract.ChatEventReasoning:
+		p.timeline.ApplyReasoning(ev.MessageID, ev.Reasoning)
+		return
+	case contract.ChatEventToolCall:
+		p.timeline.ApplyToolCall(ev)
+		return
+	case contract.ChatEventToolResult:
+		p.timeline.ApplyToolResult(ev)
 		return
 	}
 

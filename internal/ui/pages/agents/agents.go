@@ -40,6 +40,8 @@ type Page struct {
 	sessions        []contract.AgentSession
 	activeSessionID string
 	messages        []contract.ChatMessage
+	// timeline 按消息 ID 保存思考与工具步骤，进程内一直保留。
+	timeline *components.Timeline
 	// 消息分页：oldestSeq 是已加载消息的最小 seq，hasMore 表示还有更早的消息。
 	oldestSeq int64
 	hasMore   bool
@@ -140,6 +142,7 @@ func New(svc contract.AgentService, tasks contract.TaskService, artifacts contra
 		memory:        memory,
 		hooks:         hooks,
 		streams:       map[string]string{},
+		timeline:      components.NewTimeline(),
 		tasksByThread: map[string]contract.TaskDetail{},
 		panelGroupOpen: map[string]*bool{
 			"pinned": boolValue(true),
@@ -529,8 +532,12 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	var props components.MessageViewProps
 	if task != nil {
 		props = components.MessageViewProps{
-			Message:    m,
-			AvatarText: avatar,
+			Message:      m,
+			AvatarText:   avatar,
+			Steps:        p.timeline.Steps(m.ID),
+			StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+			ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
+			ToolsOpen:    p.timeline.ToolsOpen(m.ID),
 		}
 	} else {
 		showRetry := m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming
@@ -539,11 +546,15 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 			showRetry = false
 		}
 		props = components.MessageViewProps{
-			Message:    m,
-			AvatarText: avatar,
-			ShowRetry:  showRetry,
-			OnStop:     func() { p.stop(p.conversationID()) },
-			OnRetry:    func() { p.regenerate(m.ID) },
+			Message:      m,
+			AvatarText:   avatar,
+			ShowRetry:    showRetry,
+			Steps:        p.timeline.Steps(m.ID),
+			StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+			ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
+			ToolsOpen:    p.timeline.ToolsOpen(m.ID),
+			OnStop:       func() { p.stop(p.conversationID()) },
+			OnRetry:      func() { p.regenerate(m.ID) },
 			OnDelete: func() {
 				p.deleteMessageID = m.ID
 				p.deleteMessageOpen = true
@@ -1516,11 +1527,18 @@ func (p *Page) consume(conversationID string, events <-chan contract.ChatEvent) 
 
 // applyEvent 用后端快照覆盖消息，避免重复拼接。
 func (p *Page) applyEvent(conversationID string, ev contract.ChatEvent) {
-	if ev.Type == contract.ChatEventApproval {
+	switch ev.Type {
+	case contract.ChatEventApproval:
 		p.openApproval(ev)
 		return
-	}
-	if ev.Type == contract.ChatEventToolCall || ev.Type == contract.ChatEventToolResult {
+	case contract.ChatEventReasoning:
+		p.timeline.ApplyReasoning(ev.MessageID, ev.Reasoning)
+		return
+	case contract.ChatEventToolCall:
+		p.timeline.ApplyToolCall(ev)
+		return
+	case contract.ChatEventToolResult:
+		p.timeline.ApplyToolResult(ev)
 		return
 	}
 

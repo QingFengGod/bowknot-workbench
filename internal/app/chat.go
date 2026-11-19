@@ -221,6 +221,8 @@ func runGeneration(target genStream) {
 	}()
 
 	content := make([]rune, 0, 256)
+	// 思维链与正文分开累积，一并落库，重启后仍可回看。
+	var reasoning strings.Builder
 	message := target.message
 	message.Status = domain.MessageStreaming
 	lastPersist := time.Time{}
@@ -232,6 +234,7 @@ func runGeneration(target genStream) {
 		}
 		lastPersist = now
 		message.Content = string(content)
+		message.Reasoning = reasoning.String()
 		if err := target.store.Messages.Update(context.Background(), message); err != nil && !errors.Is(err, store.ErrNotFound) {
 			target.logger.Error("保存流式消息失败", "message", message.ID, "error", err)
 		}
@@ -241,6 +244,7 @@ func runGeneration(target genStream) {
 		// 群聊历史会带「【发言人】」前缀，模型偶尔会模仿到回复开头；
 		// 落库与最终事件统一剥离，避免前缀在消息里累积。
 		message.Content = stripSpeakerPrefix(string(content), message.SenderName)
+		message.Reasoning = reasoning.String()
 		message.Status = status
 		message.Error = errText
 		if target.memoryWritten != nil && *target.memoryWritten {
@@ -335,6 +339,18 @@ func runGeneration(target genStream) {
 				}
 				return
 			}
+			if chunk.Reasoning != "" {
+				reasoning.WriteString(chunk.Reasoning)
+				if !emit(contract.ChatEvent{
+					Type:      contract.ChatEventReasoning,
+					Content:   message.Content,
+					Reasoning: reasoning.String(),
+					Status:    contract.MessageStreaming,
+				}) {
+					finish(domain.MessageStopped, "")
+					return
+				}
+			}
 			if chunk.Delta != "" {
 				roundText = append(roundText, []rune(chunk.Delta)...)
 				content = append(content, []rune(chunk.Delta)...)
@@ -423,6 +439,7 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 			ToolCallID: callID,
 			ToolName:   toolID,
 			Arguments:  arguments,
+			ToolStatus: string(domain.ToolCallRunning),
 			Dangerous:  spec.Dangerous,
 		}) {
 			target.finishToolCall(record.ID, "", domain.ToolCallRejected, "生成已取消")
@@ -494,6 +511,7 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 			ToolName:   toolID,
 			Result:     resultText,
 			Error:      errText,
+			ToolStatus: string(status),
 		}) {
 			return false
 		}
@@ -570,6 +588,7 @@ func toContractMessage(item domain.Message, conversationID string) contract.Chat
 		Seq:            item.Seq,
 		Role:           contract.ChatRole(item.Role),
 		Content:        item.Content,
+		Reasoning:      item.Reasoning,
 		Status:         contract.MessageStatus(item.Status),
 		CreatedAt:      item.CreatedAt,
 		Error:          item.Error,
