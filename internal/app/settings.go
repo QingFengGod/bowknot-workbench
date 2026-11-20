@@ -113,6 +113,17 @@ func (s *SettingsService) Reset(section string) error {
 	return s.Save(next)
 }
 
+// SavePetPosition 记录桌宠窗口左上角相对主屏工作区的归一化位置。
+// 位置在拖动结束后写入，频率低，直接复用整份设置的保存流程。
+func (s *SettingsService) SavePetPosition(x, y float64) error {
+	next := s.Settings()
+	next.Pet = contract.PetSettings{Saved: true, X: x, Y: y}
+	if err := s.Save(next); err != nil {
+		return err
+	}
+	return nil
+}
+
 // 以下只读快照方法供同包服务使用。
 
 func (s *SettingsService) Task() contract.TaskSettings {

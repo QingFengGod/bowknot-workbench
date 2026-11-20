@@ -62,6 +62,8 @@ type Shell struct {
 	win  *mygo.Window
 	// launcher 管理应用窗口与 bowknot-app 协议。
 	launcher *appLauncher
+	// quitting 表示退出流程已开始，关闭窗口不再拦成隐藏。
+	quitting bool
 
 	active  string
 	native  map[string]pages.Page
@@ -184,6 +186,35 @@ func (s *Shell) Start() {
 		BackgroundColor:   "light-dark(#f7f8fa, #101114)",
 		Content:           ui.View(s.view),
 	})
+	// 关闭主窗口只隐藏到托盘，退出走托盘菜单或应用退出事件。
+	s.win.OnClose(func(e *mygo.CloseEvent) {
+		if s.quitting {
+			return
+		}
+		e.PreventDefault()
+		s.win.Hide()
+	})
+}
+
+// Window 返回主窗口，供托盘菜单控制显示。
+func (s *Shell) Window() *mygo.Window { return s.win }
+
+// Show 把主窗口带到前台；已最小化时先还原。
+func (s *Shell) Show() {
+	if s.win == nil {
+		return
+	}
+	if s.win.IsMinimized() {
+		s.win.Restore()
+	}
+	s.win.Show()
+	s.win.Focus()
+}
+
+// Quit 退出应用；退出流程中不再拦截窗口关闭。
+func (s *Shell) Quit() {
+	s.quitting = true
+	mygo.App.Quit()
 }
 
 // titleBarHeight 是自绘标题栏的高度。

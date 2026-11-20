@@ -38,6 +38,7 @@ type section struct {
 // 设置页分类顺序，与方案文档保持一致。
 var sections = []section{
 	{ID: "models", Label: "模型服务", Desc: "管理服务商与可用模型，保存后重启生效。"},
+	{ID: "voice", Label: "语音合成", Desc: "豆包语音合成 2.0，配置后点击桌宠即可播报。"},
 	{ID: "prompt", Label: "对话与提示词", Desc: "全局提示词会追加到所有 Agent 的系统提示词。"},
 	{ID: "task", Label: "任务调度", Desc: "后台任务的并发、超时与重试策略。"},
 	{ID: "group", Label: "群聊与工具", Desc: "群聊讨论轮次与工具调用轮次上限。"},
@@ -118,6 +119,12 @@ type Page struct {
 	memoryDigestHours  string
 	memoryContextTasks string
 
+	// 语音合成表单草稿，数字同样用字符串保存。
+	tts         contract.TTSSettings
+	ttsKeyInput string
+	ttsRate     string
+	ttsSpeed    string
+
 	// 恢复默认确认弹窗。
 	resetOpen    bool
 	resetSection string
@@ -156,6 +163,8 @@ func (p *Page) reload() {
 	p.providers = p.models.Providers()
 	p.modelList = p.models.Models()
 	p.defaultKey = p.models.DefaultModel()
+	p.tts = p.models.TTS()
+	p.fillTTSEditors()
 
 	if p.settings != nil {
 		p.draft = p.settings.Settings()
@@ -257,6 +266,8 @@ func (p *Page) content(c *ui.Context) {
 			switch p.current {
 			case "models":
 				p.modelsSection(c)
+			case "voice":
+				p.voiceSection(c)
 			case "prompt":
 				p.promptSection(c)
 			case "task":

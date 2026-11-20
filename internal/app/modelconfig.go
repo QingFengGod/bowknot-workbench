@@ -232,6 +232,61 @@ func (s *ModelConfigService) FetchModels(providerID string) ([]contract.ChatMode
 	return out, nil
 }
 
+// TTS 返回语音合成配置快照，密钥按服务商同样的规则脱敏。
+func (s *ModelConfigService) TTS() contract.TTSSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg, err := s.load()
+	if err != nil {
+		s.logger.Error("读取语音合成配置失败", "error", err)
+		return contract.TTSSettings{}
+	}
+	item := cfg.TTS
+	return contract.TTSSettings{
+		Enabled:    item.Enabled,
+		BaseURL:    item.BaseURL,
+		APIKey:     config.MaskKey(item.APIKey),
+		HasKey:     strings.TrimSpace(item.APIKey) != "",
+		ResourceID: item.ResourceID,
+		Speaker:    item.Speaker,
+		Format:     item.Format,
+		SampleRate: item.SampleRate,
+		SpeechRate: item.SpeechRate,
+	}
+}
+
+// SaveTTS 写入语音合成配置；留空密钥表示保持原值。
+func (s *ModelConfigService) SaveTTS(draft contract.TTSSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg, err := s.load()
+	if err != nil {
+		return err
+	}
+
+	key := cfg.TTS.APIKey
+	switch {
+	case draft.ClearKey:
+		key = ""
+	case strings.TrimSpace(draft.APIKeyInput) != "":
+		key = strings.TrimSpace(draft.APIKeyInput)
+	}
+
+	cfg.TTS = config.TTS{
+		Enabled:    draft.Enabled,
+		BaseURL:    strings.TrimSpace(draft.BaseURL),
+		APIKey:     key,
+		ResourceID: strings.TrimSpace(draft.ResourceID),
+		Speaker:    strings.TrimSpace(draft.Speaker),
+		Format:     strings.TrimSpace(draft.Format),
+		SampleRate: draft.SampleRate,
+		SpeechRate: draft.SpeechRate,
+	}
+	return config.Save(s.path, cfg)
+}
+
 func (s *ModelConfigService) Models() []contract.ModelConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -17,6 +17,13 @@ const (
 	ProviderOpenAICompatible = "openai-compatible"
 	// DefaultProviderID 是旧版单模型配置迁移后使用的供应商 ID。
 	DefaultProviderID = "default"
+
+	// DefaultTTSBaseURL 是豆包语音合成 2.0 的 HTTP 单向流式接口。
+	DefaultTTSBaseURL = "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional"
+	// DefaultTTSResourceID 是豆包语音合成 2.0 的模型版本标识。
+	DefaultTTSResourceID = "seed-tts-2.0"
+	// DefaultTTSSpeaker 是默认音色。
+	DefaultTTSSpeaker = "zh_female_vv_uranus_bigtts"
 )
 
 // Provider 是一个模型服务商的连接配置。
@@ -49,18 +56,43 @@ type LegacyModel struct {
 	DefaultModel string `json:"defaultModel"`
 }
 
+// TTS 是豆包语音合成配置。apiKey 留空时不发起合成。
+type TTS struct {
+	Enabled    bool   `json:"enabled"`
+	BaseURL    string `json:"baseUrl"`
+	APIKey     string `json:"apiKey"`
+	ResourceID string `json:"resourceId"`
+	Speaker    string `json:"speaker"`
+	Format     string `json:"format"`
+	SampleRate int    `json:"sampleRate"`
+	// SpeechRate 是语速偏移，0 为正常，范围 [-50, 100]。
+	SpeechRate int `json:"speechRate"`
+}
+
+// Config 是 config.json 的结构。
 type Config struct {
 	LogLevel        string     `json:"logLevel"`
 	Providers       []Provider `json:"providers,omitempty"`
 	Models          []Model    `json:"models,omitempty"`
 	DefaultModelKey string     `json:"defaultModelKey,omitempty"`
+	TTS             TTS        `json:"tts"`
 	// Legacy 只在读取旧配置时出现，保存时始终为空。
 	Legacy *LegacyModel `json:"model,omitempty"`
 }
 
 // Default 返回首次启动使用的配置。
 func Default() Config {
-	return Config{LogLevel: "info"}
+	return Config{
+		LogLevel: "info",
+		TTS: TTS{
+			Enabled:    true,
+			BaseURL:    DefaultTTSBaseURL,
+			ResourceID: DefaultTTSResourceID,
+			Speaker:    DefaultTTSSpeaker,
+			Format:     "pcm",
+			SampleRate: 24000,
+		},
+	}
 }
 
 // Load 读取配置；文件不存在时写入默认配置并返回。
@@ -118,6 +150,30 @@ func (c Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("日志级别无效：%s", c.LogLevel)
+	}
+
+	if key := strings.TrimSpace(c.TTS.APIKey); key != "" {
+		parsed, err := url.Parse(c.TTS.BaseURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("语音合成 baseUrl 无效：%s", c.TTS.BaseURL)
+		}
+		if c.TTS.ResourceID == "" {
+			return errors.New("语音合成 resourceId 不能为空")
+		}
+		if c.TTS.Speaker == "" {
+			return errors.New("语音合成 speaker 不能为空")
+		}
+		switch c.TTS.Format {
+		case "pcm":
+		default:
+			return fmt.Errorf("语音合成 format 目前仅支持 pcm：%s", c.TTS.Format)
+		}
+		if c.TTS.SampleRate <= 0 {
+			return errors.New("语音合成 sampleRate 必须大于 0")
+		}
+		if c.TTS.SpeechRate < -50 || c.TTS.SpeechRate > 100 {
+			return fmt.Errorf("语音合成 speechRate 超出范围：%d", c.TTS.SpeechRate)
+		}
 	}
 
 	providers := make(map[string]bool, len(c.Providers))
@@ -248,6 +304,7 @@ func (c Config) Redacted() Config {
 		providers[i].APIKey = MaskKey(providers[i].APIKey)
 	}
 	c.Providers = providers
+	c.TTS.APIKey = MaskKey(c.TTS.APIKey)
 	if c.Legacy != nil {
 		legacy := *c.Legacy
 		legacy.APIKey = MaskKey(legacy.APIKey)
@@ -343,6 +400,27 @@ func (c *Config) normalize() {
 		}
 	}
 	c.DefaultModelKey = strings.TrimSpace(c.DefaultModelKey)
+
+	c.TTS.BaseURL = strings.TrimRight(strings.TrimSpace(c.TTS.BaseURL), "/")
+	c.TTS.APIKey = strings.TrimSpace(c.TTS.APIKey)
+	c.TTS.ResourceID = strings.TrimSpace(c.TTS.ResourceID)
+	c.TTS.Speaker = strings.TrimSpace(c.TTS.Speaker)
+	c.TTS.Format = strings.ToLower(strings.TrimSpace(c.TTS.Format))
+	if c.TTS.BaseURL == "" {
+		c.TTS.BaseURL = DefaultTTSBaseURL
+	}
+	if c.TTS.ResourceID == "" {
+		c.TTS.ResourceID = DefaultTTSResourceID
+	}
+	if c.TTS.Speaker == "" {
+		c.TTS.Speaker = DefaultTTSSpeaker
+	}
+	if c.TTS.Format == "" {
+		c.TTS.Format = "pcm"
+	}
+	if c.TTS.SampleRate == 0 {
+		c.TTS.SampleRate = 24000
+	}
 }
 
 func normalizeProviderType(value string) string {

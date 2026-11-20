@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
 	"bowknot-workbench/internal/app"
 	"bowknot-workbench/internal/backend"
@@ -11,16 +12,44 @@ import (
 	"bowknot-workbench/internal/infra/config"
 	pkgs "bowknot-workbench/internal/infra/package"
 	"bowknot-workbench/internal/infra/tool"
+	"bowknot-workbench/internal/pet"
 	"bowknot-workbench/internal/platform/lifecycle"
 	"bowknot-workbench/internal/platform/logging"
 	"bowknot-workbench/internal/platform/paths"
 	"bowknot-workbench/internal/store"
+	"bowknot-workbench/internal/tts"
+	"bowknot-workbench/internal/ui/components"
+	petui "bowknot-workbench/internal/ui/pet"
 	"bowknot-workbench/internal/ui/shell"
+	"bowknot-workbench/internal/ui/theme"
 
 	"github.com/egoist/mygo"
 )
 
 const version = "0.0.1"
+
+// desktopTray 保持托盘对象存活，避免被回收后图标消失。
+var desktopTray *mygo.Tray
+
+// petLines 是点击桌宠时播报的短句，用于验证语音链路。
+var petLines = []string{
+	"你好呀，我是蝴蝶结。",
+	"今天也要开开心心的。",
+	"需要我帮忙吗？",
+}
+
+// newTTSProvider 按当前配置创建豆包语音合成客户端。
+func newTTSProvider(item config.TTS) *tts.Doubao {
+	return tts.NewDoubao(tts.DoubaoOptions{
+		BaseURL:    item.BaseURL,
+		APIKey:     item.APIKey,
+		ResourceID: item.ResourceID,
+		Speaker:    item.Speaker,
+		Format:     item.Format,
+		SampleRate: item.SampleRate,
+		SpeechRate: item.SpeechRate,
+	})
+}
 
 func main() {
 	dataPaths, err := paths.Resolve()
@@ -191,15 +220,144 @@ func main() {
 		LogsPath:     dataPaths.Logs,
 	})
 
+	// 桌宠窗口与主窗口同生命周期，退出时停掉帧调度。
+	var desktopPet *petui.Pet
+	lc.Add("pet", func(context.Context) error {
+		if desktopPet != nil {
+			desktopPet.Stop()
+		}
+		return nil
+	})
+
+	// 语音合成走豆包 seed-tts-2.0；未填 apiKey 时点击桌宠只做动作、不发声。
+	speaker := tts.NewSpeaker(newTTSProvider(cfg.TTS))
+	lc.Add("tts", func(context.Context) error {
+		speaker.Stop()
+		return nil
+	})
+	// 真正开始播放时才切到说话动作，避免合成等待期间空张嘴。
+	speaker.SetOnStart(func() {
+		if desktopPet == nil {
+			return
+		}
+		desktopPet.Window().Update(func() {
+			desktopPet.Play("talk")
+		})
+	})
+	if cfg.TTS.APIKey == "" {
+		logger.Info("语音合成未配置 apiKey，可在设置 > 语音合成中填写", "config", dataPaths.Config)
+	}
+
 	// mygo 在系统强制退出等场景可能直接结束进程，OnQuit 是最后可靠的清理时机。
 	mygo.App.OnQuit(func() {
 		if err := lc.Close(); err != nil {
 			logger.Error("退出清理失败", "error", err)
 		}
 	})
+	// 全部窗口关闭后保留进程，由托盘负责重新打开或退出。
+	mygo.App.OnWindowAllClosed(func() {})
 
+	// petLineIndex 只在主线程的点击回调里递增，无需加锁。
+	petLineIndex := 0
+	// petRound 标识最新一次点击，用于丢弃旧播报的收尾回调。
+	petRound := 0
 	mygo.App.WhenReady(func() {
 		desktop.Start()
+		// 窗口验证阶段先直接创建桌宠，后续由设置项控制开关。
+		bundle, err := pet.Builtin("bowknot")
+		if err != nil {
+			logger.Error("加载桌宠素材失败", "error", err)
+			return
+		}
+		// 位置从设置恢复；首次启动落在主屏工作区右下角。
+		var position *petui.Position
+		if saved := settingsSvc.Settings().Pet; saved.Saved {
+			position = &petui.Position{X: saved.X, Y: saved.Y}
+		}
+		desktopPet, err = petui.New(petui.Options{
+			Bundle:   bundle,
+			Position: position,
+			SavePosition: func(x, y float64) {
+				if err := settingsSvc.SavePetPosition(x, y); err != nil {
+					logger.Warn("保存桌宠位置失败", "error", err)
+				}
+			},
+			OnClick: func() {
+				// 点击反应先播，语音真正开始时再切到 talk。
+				desktopPet.Play("click")
+				// 设置页保存后立即生效：每次点击重新读取配置。
+				current, loadErr := config.Load(dataPaths.Config)
+				if loadErr != nil {
+					logger.Warn("读取语音合成配置失败", "error", loadErr)
+					return
+				}
+				if !current.TTS.Enabled || current.TTS.APIKey == "" {
+					return
+				}
+				speaker.SetProvider(newTTSProvider(current.TTS))
+				text := petLines[petLineIndex%len(petLines)]
+				petLineIndex++
+				petRound++
+				round := petRound
+				// 合成与播放放到后台，避免阻塞 UI 线程。
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := speaker.Speak(ctx, text); err != nil {
+						logger.Warn("语音播报失败", "error", err)
+					}
+					if desktopPet == nil {
+						return
+					}
+					// 只让最后一次播报负责收尾，避免连续点击时被旧播报切回 idle。
+					desktopPet.Window().Update(func() {
+						if round == petRound {
+							desktopPet.Play("idle")
+						}
+					})
+				}()
+			},
+		})
+		if err != nil {
+			logger.Error("创建桌宠窗口失败", "error", err)
+		}
+
+		// 托盘常驻：关闭主窗口后仍能重新打开，也负责真正退出。
+		// 图标用品牌 logo（蝴蝶结），左键直接唤起主窗口，右键弹出菜单。
+		trayIcon, iconErr := components.LogoPNG(64, theme.Brand)
+		if iconErr != nil {
+			logger.Warn("渲染托盘图标失败", "error", iconErr)
+		}
+		desktopTray, err = mygo.NewTray(mygo.TrayOptions{
+			Icon:    trayIcon,
+			ToolTip: "Bowknot Workbench",
+			Menu: mygo.NewMenu([]*mygo.MenuItem{
+				{Label: "打开主窗口", Click: func(*mygo.MenuItem, *mygo.Window) {
+					desktop.Show()
+				}},
+				{Label: "显示桌宠", Type: mygo.MenuItemCheckbox, Checked: true, Click: func(item *mygo.MenuItem, _ *mygo.Window) {
+					if desktopPet == nil {
+						return
+					}
+					if item.IsChecked() {
+						desktopPet.Window().Show()
+					} else {
+						desktopPet.Window().Hide()
+					}
+				}},
+				mygo.Separator(),
+				{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) {
+					desktop.Quit()
+				}},
+			}),
+		})
+		if err != nil {
+			logger.Warn("创建托盘图标失败", "error", err)
+			return
+		}
+		desktopTray.OnClick(func() {
+			desktop.Show()
+		})
 	})
 	if err := mygo.App.Run(); err != nil {
 		logger.Error("应用运行失败", "error", err)

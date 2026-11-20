@@ -46,6 +46,15 @@ type AppearanceSettings struct {
 	Theme string `json:"theme"`
 }
 
+// PetSettings 是桌宠窗口的位置。
+type PetSettings struct {
+	// Saved 表示位置已记录过，否则回落到主屏右下角。
+	Saved bool `json:"saved"`
+	// X、Y 是窗口左上角相对主屏工作区的比例，取值 0–1。
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
 // Settings 是一次性写入 app_meta 的运行设置。
 type Settings struct {
 	Task       TaskSettings       `json:"task"`
@@ -53,6 +62,7 @@ type Settings struct {
 	Memory     MemorySettings     `json:"memory"`
 	Prompt     PromptSettings     `json:"prompt"`
 	Appearance AppearanceSettings `json:"appearance"`
+	Pet        PetSettings        `json:"pet"`
 }
 
 // DefaultSettings 返回出厂默认值，供初始化与「恢复默认」复用。
@@ -94,6 +104,8 @@ func (s *Settings) Normalize() {
 	if s.Appearance.Theme == "" {
 		s.Appearance.Theme = ThemeSystem
 	}
+	s.Pet.X = min(max(s.Pet.X, 0), 1)
+	s.Pet.Y = min(max(s.Pet.Y, 0), 1)
 
 	if s.Task.MaxAttempts >= 1 {
 		want := s.Task.MaxAttempts - 1
@@ -158,6 +170,10 @@ func (s Settings) Validate() error {
 	case ThemeSystem, ThemeDark, ThemeLight:
 	default:
 		return fmt.Errorf("外观主题取值无效：%s", s.Appearance.Theme)
+	}
+
+	if s.Pet.X < 0 || s.Pet.X > 1 || s.Pet.Y < 0 || s.Pet.Y > 1 {
+		return errors.New("桌宠位置需在 0 到 1 之间")
 	}
 	return nil
 }
