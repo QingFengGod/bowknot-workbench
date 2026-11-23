@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,7 +29,7 @@ const (
 	maxArtifactNameRunes = 100
 )
 
-// ArtifactService 负责产物校验、落盘、记录与查询。
+// ArtifactService 负责文件校验、落盘、记录与查询。
 type ArtifactService struct {
 	store    *store.Store
 	root     string
@@ -52,7 +53,7 @@ func (s *ArtifactService) ArtifactRevision() uint64 {
 func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID string, in tool.ArtifactInput) (tool.ArtifactRef, error) {
 	title := truncateRunes(strings.TrimSpace(in.Title), 120)
 	if title == "" {
-		return tool.ArtifactRef{}, errors.New("产物标题不能为空")
+		return tool.ArtifactRef{}, errors.New("文件标题不能为空")
 	}
 
 	sourcePath := ""
@@ -65,7 +66,7 @@ func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID strin
 	}
 	kind := normalizeArtifactKind(in.Kind, in.Filename, sourcePath, in.Content)
 	nameHint := firstNonEmpty(in.Filename, filepath.Base(sourcePath))
-	// 二进制产物沿用源文件扩展名，避免被补成 .txt 后交给错误的系统应用。
+	// 二进制文件沿用源文件扩展名，避免被补成 .txt 后交给错误的系统应用。
 	if (kind == domain.ArtifactImage || kind == domain.ArtifactFile) &&
 		sourcePath != "" && filepath.Ext(nameHint) == "" {
 		nameHint += filepath.Ext(sourcePath)
@@ -94,7 +95,7 @@ func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID strin
 
 	case domain.ArtifactImage, domain.ArtifactFile:
 		if sourcePath == "" {
-			return tool.ArtifactRef{}, errors.New("图片或文件产物需要提供 sourcePath")
+			return tool.ArtifactRef{}, errors.New("图片或文件需要提供 sourcePath")
 		}
 		limit := int64(maxFileArtifactSize)
 		if kind == domain.ArtifactImage {
@@ -115,10 +116,10 @@ func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID strin
 	default:
 		content := in.Content
 		if strings.TrimSpace(content) == "" {
-			return tool.ArtifactRef{}, errors.New("文本类产物需要提供 content")
+			return tool.ArtifactRef{}, errors.New("文本文件需要提供 content")
 		}
 		if int64(len(content)) > maxTextArtifactSize {
-			return tool.ArtifactRef{}, fmt.Errorf("文本产物不能超过 %d KB", maxTextArtifactSize/1024)
+			return tool.ArtifactRef{}, fmt.Errorf("文本文件不能超过 %d KB", maxTextArtifactSize/1024)
 		}
 		mime = artifactMIME(kind)
 		relativePath, size, err = s.writeContent(artifactID, filename, []byte(content))
@@ -146,7 +147,7 @@ func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID strin
 	if err := s.store.Artifacts.Create(ctx, record); err != nil {
 		// 记录失败时清理已落盘的文件，避免留下孤儿目录。
 		_ = os.RemoveAll(filepath.Join(s.dir, artifactID))
-		return tool.ArtifactRef{}, fmt.Errorf("保存产物记录失败：%w", err)
+		return tool.ArtifactRef{}, fmt.Errorf("保存文件记录失败：%w", err)
 	}
 
 	s.revision.Add(1)
@@ -159,7 +160,78 @@ func (s *ArtifactService) SaveArtifact(ctx context.Context, conversationID strin
 	}, nil
 }
 
-// Artifacts 返回产物列表，供产物页与筛选使用。
+// RegisterFile 把工作区里的文件登记到文件库：只记录路径，不复制文件，
+// 让内置文件工具写入的内容也能出现在对话与文件库，并始终指向原文件。
+func (s *ArtifactService) RegisterFile(ctx context.Context, conversationID, path string) (tool.ArtifactRef, error) {
+	abs, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return tool.ArtifactRef{}, fmt.Errorf("解析文件路径失败：%w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return tool.ArtifactRef{}, fmt.Errorf("读取文件失败：%w", err)
+	}
+	if info.IsDir() {
+		return tool.ArtifactRef{}, fmt.Errorf("%s 是目录，不能加入文件库", abs)
+	}
+	if info.Size() > maxFileArtifactSize {
+		return tool.ArtifactRef{}, fmt.Errorf("文件超过 %d MB，暂不能加入文件库", maxFileArtifactSize>>20)
+	}
+
+	messageID := strings.TrimSpace(tool.MessageID(ctx))
+	// 同一条消息里重复写入同一个文件时复用已有登记，避免文件条刷屏。
+	if messageID != "" {
+		if items, listErr := s.store.Artifacts.ListByMessageIDs(ctx, []string{messageID}); listErr == nil {
+			for _, item := range items {
+				if item.SourcePath == abs {
+					return tool.ArtifactRef{
+						ID:       item.ID,
+						Title:    item.Title,
+						Kind:     string(item.Kind),
+						Filename: item.Filename,
+						Size:     item.Size,
+					}, nil
+				}
+			}
+		}
+	}
+
+	conversation, taskID := s.contextOf(ctx, conversationID)
+	name := filepath.Base(abs)
+	kind := normalizeArtifactKind("", name, abs, "")
+	mimeType := mime.TypeByExtension(filepath.Ext(abs))
+	if mimeType == "" {
+		mimeType = artifactMIME(kind)
+	}
+	record := domain.Artifact{
+		ID:             "art-" + id.New(),
+		ConversationID: conversation,
+		TaskID:         taskID,
+		MessageID:      messageID,
+		Title:          name,
+		Kind:           kind,
+		MIME:           mimeType,
+		Filename:       name,
+		SourcePath:     abs,
+		Size:           info.Size(),
+		Summary:        "本地文件",
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+	if err := s.store.Artifacts.Create(ctx, record); err != nil {
+		return tool.ArtifactRef{}, fmt.Errorf("登记文件失败：%w", err)
+	}
+
+	s.revision.Add(1)
+	return tool.ArtifactRef{
+		ID:       record.ID,
+		Title:    record.Title,
+		Kind:     string(record.Kind),
+		Filename: record.Filename,
+		Size:     record.Size,
+	}, nil
+}
+
+// Artifacts 返回文件列表，供文件库页面与筛选使用。
 func (s *ArtifactService) Artifacts(filter contract.ArtifactFilter) []contract.ArtifactDetail {
 	kinds := make([]domain.ArtifactKind, 0, len(filter.Kinds))
 	for _, kind := range filter.Kinds {
@@ -174,7 +246,7 @@ func (s *ArtifactService) Artifacts(filter contract.ArtifactFilter) []contract.A
 		Limit:   filter.Limit,
 	})
 	if err != nil {
-		s.logger.Error("读取产物列表失败", "error", err)
+		s.logger.Error("读取文件列表失败", "error", err)
 		return nil
 	}
 	out := make([]contract.ArtifactDetail, 0, len(items))
@@ -192,26 +264,29 @@ func (s *ArtifactService) Artifact(id string) contract.ArtifactDetail {
 	return s.detail(context.Background(), item)
 }
 
-// DeleteArtifact 删除产物记录与托管目录；失败时保留记录并返回中文错误。
+// DeleteArtifact 删除文件记录与托管目录；失败时保留记录并返回中文错误。
 func (s *ArtifactService) DeleteArtifact(id string) error {
 	ctx := context.Background()
 	item, err := s.store.Artifacts.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("产物不存在：%s", id)
+			return fmt.Errorf("文件不存在：%s", id)
 		}
-		return fmt.Errorf("读取产物失败：%w", err)
+		return fmt.Errorf("读取文件失败：%w", err)
 	}
 
 	if strings.ContainsAny(item.ID, `/\`) {
-		return errors.New("产物路径非法，已拒绝删除")
+		return errors.New("文件路径非法，已拒绝删除")
 	}
-	dir := filepath.Join(s.dir, item.ID)
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("删除产物文件失败：%w", err)
+	// 外部文件只移除登记记录，绝不删除工作区里的原文件。
+	if item.SourcePath == "" {
+		dir := filepath.Join(s.dir, item.ID)
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("删除文件失败：%w", err)
+		}
 	}
 	if err := s.store.Artifacts.Delete(ctx, id); err != nil {
-		return fmt.Errorf("删除产物记录失败：%w", err)
+		return fmt.Errorf("删除文件记录失败：%w", err)
 	}
 	s.revision.Add(1)
 	return nil
@@ -226,10 +301,16 @@ func (s *ArtifactService) detail(ctx context.Context, item domain.Artifact) cont
 		Filename:       item.Filename,
 		URI:            item.URI,
 		Summary:        item.Summary,
+		External:       item.SourcePath != "",
 	}
 
-	if item.Kind != domain.ArtifactLink && item.RelativePath != "" {
-		detail.Path = filepath.Join(s.dir, filepath.FromSlash(item.RelativePath))
+	if item.Kind != domain.ArtifactLink {
+		switch {
+		case item.RelativePath != "":
+			detail.Path = filepath.Join(s.dir, filepath.FromSlash(item.RelativePath))
+		case item.SourcePath != "":
+			detail.Path = item.SourcePath
+		}
 	}
 
 	if conversation, err := s.store.Conversations.Get(ctx, item.ConversationID); err == nil {
@@ -248,19 +329,24 @@ func (s *ArtifactService) detail(ctx context.Context, item domain.Artifact) cont
 	return detail
 }
 
-// brief 生成产物摘要，并检查文件是否仍然存在。
+// brief 生成文件摘要，并检查文件是否仍然存在。
 func (s *ArtifactService) brief(item domain.Artifact) contract.ArtifactBrief {
 	brief := contract.ArtifactBrief{
 		ID:        item.ID,
 		Title:     item.Title,
 		Kind:      contract.ArtifactKind(item.Kind),
 		MIME:      item.MIME,
+		Filename:  item.Filename,
 		Size:      item.Size,
 		CreatedAt: item.CreatedAt,
 	}
 	switch {
 	case item.Kind == domain.ArtifactLink:
 		brief.Available = true
+	case item.SourcePath != "":
+		if _, err := os.Stat(item.SourcePath); err == nil {
+			brief.Available = true
+		}
 	case item.RelativePath != "":
 		if _, err := os.Stat(filepath.Join(s.dir, filepath.FromSlash(item.RelativePath))); err == nil {
 			brief.Available = true
@@ -289,38 +375,38 @@ func (s *ArtifactService) contextOf(ctx context.Context, conversationID string) 
 func (s *ArtifactService) writeContent(artifactID, filename string, content []byte) (string, int64, error) {
 	dir := filepath.Join(s.dir, artifactID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, fmt.Errorf("创建产物目录失败：%w", err)
+		return "", 0, fmt.Errorf("创建文件目录失败：%w", err)
 	}
 
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return "", 0, fmt.Errorf("创建产物文件失败：%w", err)
+		return "", 0, fmt.Errorf("创建文件失败：%w", err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, fmt.Errorf("写入产物失败：%w", err)
+		return "", 0, fmt.Errorf("写入文件失败：%w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, fmt.Errorf("保存产物失败：%w", err)
+		return "", 0, fmt.Errorf("保存文件失败：%w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, fmt.Errorf("保存产物失败：%w", err)
+		return "", 0, fmt.Errorf("保存文件失败：%w", err)
 	}
 
 	final := filepath.Join(dir, filename)
 	if err := os.Rename(tmpName, final); err != nil {
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, fmt.Errorf("保存产物失败：%w", err)
+		return "", 0, fmt.Errorf("保存文件失败：%w", err)
 	}
 	return filepath.ToSlash(filepath.Join(artifactID, filename)), int64(len(content)), nil
 }
@@ -331,7 +417,7 @@ func (s *ArtifactService) copySource(artifactID, filename, sourcePath string, li
 		return "", 0, "", errors.New("sourcePath 不是可读取的文件")
 	}
 	if info.Size() > limit {
-		return "", 0, "", fmt.Errorf("产物文件不能超过 %d MB", limit/1024/1024)
+		return "", 0, "", fmt.Errorf("文件不能超过 %d MB", limit/1024/1024)
 	}
 
 	source, err := os.Open(sourcePath)
@@ -349,12 +435,12 @@ func (s *ArtifactService) copySource(artifactID, filename, sourcePath string, li
 
 	dir := filepath.Join(s.dir, artifactID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, "", fmt.Errorf("创建产物目录失败：%w", err)
+		return "", 0, "", fmt.Errorf("创建文件目录失败：%w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return "", 0, "", fmt.Errorf("创建产物文件失败：%w", err)
+		return "", 0, "", fmt.Errorf("创建文件失败：%w", err)
 	}
 	tmpName := tmp.Name()
 	written, copyErr := io.Copy(tmp, source)
@@ -368,19 +454,19 @@ func (s *ArtifactService) copySource(artifactID, filename, sourcePath string, li
 	if copyErr != nil {
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, "", fmt.Errorf("保存产物失败：%w", copyErr)
+		return "", 0, "", fmt.Errorf("保存文件失败：%w", copyErr)
 	}
 
 	final := filepath.Join(dir, filename)
 	if err := os.Rename(tmpName, final); err != nil {
 		_ = os.Remove(tmpName)
 		_ = os.RemoveAll(dir)
-		return "", 0, "", fmt.Errorf("保存产物失败：%w", err)
+		return "", 0, "", fmt.Errorf("保存文件失败：%w", err)
 	}
 	return filepath.ToSlash(filepath.Join(artifactID, filename)), written, mime, nil
 }
 
-// resolveSourcePath 只允许把数据目录内的文件复制为产物。
+// resolveSourcePath 只允许把数据目录内的文件复制进文件库。
 func (s *ArtifactService) resolveSourcePath(raw string) (string, error) {
 	abs, err := filepath.Abs(strings.TrimSpace(raw))
 	if err != nil {

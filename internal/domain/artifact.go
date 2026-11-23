@@ -26,6 +26,8 @@ type Artifact struct {
 	Filename       string
 	// RelativePath 相对 artifacts 根目录；链接类型为空。
 	RelativePath string
+	// SourcePath 是用户目录里的原始文件路径；非空时不复制文件，只登记引用。
+	SourcePath string
 	// URI 只用于链接类型。
 	URI       string
 	Size      int64

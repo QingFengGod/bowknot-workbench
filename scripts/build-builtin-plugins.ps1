@@ -6,7 +6,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $plugins = @(
-    @{ Dir = 'cmd/plugin-filesystem'; Name = 'file-system' }
+    @{ Dir = 'cmd/plugin-websearch'; Name = 'web-search' }
 )
 
 foreach ($plugin in $plugins) {

@@ -443,6 +443,9 @@ func pluginEnv(plugin domain.Plugin) []string {
 	allowed := []string{
 		"PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP",
 		"SystemRoot", "ComSpec", "LANG", "LC_ALL",
+		// 网络类插件需要沿用系统代理才能访问外网。
+		"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+		"https_proxy", "http_proxy", "all_proxy", "no_proxy",
 	}
 	env := make([]string, 0, len(allowed)+3)
 	for _, key := range allowed {

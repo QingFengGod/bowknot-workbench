@@ -73,13 +73,15 @@ type Page struct {
 	detailMessages  []contract.ChatMessage
 	detailArtifacts []contract.ArtifactDetail
 
-	viewer             components.ArtifactViewer
-	viewerOpen         bool
-	artifactDeleteOpen bool
+	// 文件预览：抽屉状态与删除确认统一由 ArtifactHost 管理。
+	artifactHost *components.ArtifactHost
 }
 
 func New(svc contract.TaskService, agents contract.AgentService, artifacts contract.ArtifactService, hooks Hooks) *Page {
-	return &Page{svc: svc, agents: agents, artifacts: artifacts, hooks: hooks, ownerLabel: "全部员工"}
+	return &Page{
+		svc: svc, agents: agents, artifacts: artifacts, hooks: hooks,
+		ownerLabel: "全部员工", artifactHost: components.NewArtifactHost(artifacts),
+	}
 }
 
 // OnShow 在切换到本页时刷新员工列表与任务统计。
@@ -333,7 +335,8 @@ func (p *Page) taskList(c *ui.Context) {
 		return
 	}
 
-	ui.Scroll(c).Grow(1).Children(func() {
+	// Row 默认按交叉轴居中排版，这里显式撑满高度，让列表从顶部开始排列。
+	ui.Scroll(c).Grow(1).FillHeight().Children(func() {
 		ui.Column(c).FillWidth().Gap(6).Children(func() {
 			for _, detail := range p.items {
 				p.taskRow(c, detail)
@@ -570,7 +573,7 @@ func (p *Page) detailBody(c *ui.Context, task contract.TaskDetail) {
 	}
 
 	if len(p.detailArtifacts) > 0 {
-		components.SectionTitle(c, "产出产物", fmt.Sprintf("%d 个", len(p.detailArtifacts)))
+		components.SectionTitle(c, "产出文件", fmt.Sprintf("%d 个", len(p.detailArtifacts)))
 		ui.Column(c).FillWidth().Gap(4).Children(func() {
 			for _, artifact := range p.detailArtifacts {
 				item := artifact
@@ -615,12 +618,10 @@ func (p *Page) processMessage(c *ui.Context, m contract.ChatMessage, avatar stri
 	}
 
 	components.MessageView(c, components.MessageViewProps{
-		Message:    m,
-		AvatarText: avatar,
+		Message:        m,
+		AvatarText:     avatar,
+		OnOpenArtifact: p.openArtifact,
 	})
-	if p.artifacts != nil && len(m.Artifacts) > 0 {
-		components.ArtifactList(c, m.Artifacts, p.openArtifact)
-	}
 }
 
 // firstRune 取名称首字作为头像文字，空名称回退到默认字。
@@ -682,21 +683,11 @@ func (p *Page) openArtifact(id string) {
 	if p.artifacts == nil || id == "" {
 		return
 	}
-	p.viewer.Open(p.artifacts, id)
-	p.viewerOpen = true
+	p.artifactHost.Open(id)
 }
 
 func (p *Page) artifactDrawer(c *ui.Context) {
-	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
-		Open:   &p.viewerOpen,
-		Viewer: p.viewer,
-		OnDelete: func() {
-			p.artifactDeleteOpen = true
-		},
-	})
-	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
-		p.deleteArtifact(p.viewer.Detail.ID)
-	})
+	p.artifactHost.Render(c, components.ArtifactHostProps{OnDelete: p.deleteArtifact})
 }
 
 func (p *Page) deleteArtifact(id string) {
@@ -711,8 +702,7 @@ func (p *Page) deleteArtifact(id string) {
 				return
 			}
 			p.errText = ""
-			p.viewerOpen = false
-			p.viewer = components.ArtifactViewer{}
+			p.artifactHost.Close()
 			p.reload(true)
 		})
 	}()

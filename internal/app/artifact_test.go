@@ -25,6 +25,61 @@ func newArtifactStack(t *testing.T) (*ArtifactService, *store.Store, string) {
 	return svc, st, root
 }
 
+func TestRegisterExternalFile(t *testing.T) {
+	svc, st, root := newArtifactStack(t)
+	ctx := context.Background()
+
+	if err := st.Conversations.Create(ctx, domain.Conversation{
+		ID: "conv-1", Kind: domain.KindAssistant, Title: "主助手", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("创建会话失败：%v", err)
+	}
+	if _, err := st.Messages.Append(ctx, domain.Message{
+		ID: "msg-1", ConversationID: "conv-1", Role: domain.RoleAssistant,
+		Status: domain.MessageDone, CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("写入消息失败：%v", err)
+	}
+
+	path := filepath.Join(root, "demo.md")
+	if err := os.WriteFile(path, []byte("# demo"), 0o644); err != nil {
+		t.Fatalf("写入外部文件失败：%v", err)
+	}
+	execCtx := tool.WithMessageID(ctx, "msg-1")
+
+	ref, err := svc.RegisterFile(execCtx, "conv-1", path)
+	if err != nil {
+		t.Fatalf("RegisterFile() error = %v", err)
+	}
+	detail := svc.Artifact(ref.ID)
+	if !detail.External || detail.Path != path || !detail.Available {
+		t.Fatalf("外部文件产物详情不匹配：%+v", detail)
+	}
+	if detail.Kind != contract.ArtifactMarkdown || detail.Filename != "demo.md" {
+		t.Fatalf("外部文件产物类型或文件名不匹配：%+v", detail)
+	}
+
+	// 同一条消息里重复登记同一文件时复用记录。
+	again, err := svc.RegisterFile(execCtx, "conv-1", path)
+	if err != nil {
+		t.Fatalf("重复 RegisterFile() error = %v", err)
+	}
+	if again.ID != ref.ID {
+		t.Fatalf("重复登记产生了新产物：%s != %s", again.ID, ref.ID)
+	}
+
+	// 删除登记记录不应删除用户目录里的原文件。
+	if err := svc.DeleteArtifact(ref.ID); err != nil {
+		t.Fatalf("DeleteArtifact() error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("删除产物记录后原文件丢失：%v", err)
+	}
+	if _, err := st.Artifacts.Get(ctx, ref.ID); err == nil {
+		t.Fatal("删除后产物记录仍然存在")
+	}
+}
+
 func TestSaveArtifactAndAttach(t *testing.T) {
 	svc, st, _ := newArtifactStack(t)
 	ctx := context.Background()
@@ -108,7 +163,7 @@ func TestArtifactToolExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(result.Content, "已保存产物") || !strings.Contains(result.Content, "交付清单") {
+	if !strings.Contains(result.Content, "已保存文件") || !strings.Contains(result.Content, "交付清单") {
 		t.Fatalf("工具结果 = %q", result.Content)
 	}
 	items := svc.Artifacts(contract.ArtifactFilter{Limit: 10})

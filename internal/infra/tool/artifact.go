@@ -33,6 +33,8 @@ type ArtifactRef struct {
 // ArtifactSink 由 app 层实现，负责校验、落盘与记录。
 type ArtifactSink interface {
 	SaveArtifact(ctx context.Context, conversationID string, in ArtifactInput) (ArtifactRef, error)
+	// RegisterFile 把用户目录里的文件登记为产物，不复制文件。
+	RegisterFile(ctx context.Context, conversationID, path string) (ArtifactRef, error)
 }
 
 // ArtifactToolSpec 声明保存产物工具。
@@ -40,13 +42,13 @@ func ArtifactToolSpec() ToolSpec {
 	return ToolSpec{
 		ID:          SaveArtifactToolID,
 		Name:        SaveArtifactToolID,
-		Description: "把可复用的交付物保存为产物（文档、代码、图片、HTML、链接等）。当用户要求生成文件、报告、代码文件、图片或可下载内容时调用；保存后回复正文只写简要说明，不要重复整段内容。文本类用 content 传入完整内容；图片或已有文件用 sourcePath 指向数据目录内的文件；链接用 content 传入 http/https 地址。",
+		Description: "把可复用的交付物保存为文件（文档、代码、图片、HTML、链接等），保存后可出现在文件库并直接打开。当用户要求生成报告、代码文件、图片或可下载内容，且不方便用 writeFile 指定路径时调用；保存后回复正文只写简要说明，不要重复整段内容。文本类用 content 传入完整内容；图片或已有文件用 sourcePath 指向工作区内的文件；链接用 content 传入 http/https 地址。",
 		Source:      SourceBuiltin,
 		SourceID:    "builtin",
 		Parameters: `{
   "type": "object",
   "properties": {
-    "title": {"type": "string", "description": "产物标题，便于用户识别"},
+    "title": {"type": "string", "description": "文件标题，便于用户识别"},
     "kind": {"type": "string", "description": "markdown / text / code / html / image / link / file；省略时按 filename 推断"},
     "filename": {"type": "string", "description": "文件名，可省略"},
     "content": {"type": "string", "description": "文本内容；link 类型填 URL"},
@@ -55,6 +57,5 @@ func ArtifactToolSpec() ToolSpec {
     "summary": {"type": "string", "description": "一句话说明，可省略"}
   },
   "required": ["title"]
-}`,
-	}
+}`}
 }

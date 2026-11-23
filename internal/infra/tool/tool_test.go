@@ -365,3 +365,31 @@ func TestOutputTruncated(t *testing.T) {
 		t.Fatalf("缺少截断提示：%q", result.Content)
 	}
 }
+
+// TestModelNameResolve 保证插件工具 ID 能转成供应商可接受的函数名并反查回来。
+func TestModelNameResolve(t *testing.T) {
+	spec := ToolSpec{
+		ID:       "plugin:file-system/editFile",
+		Name:     "editFile",
+		Source:   SourcePlugin,
+		SourceID: "file-system",
+	}
+	svc := NewService(Options{Logger: testLogger()})
+	svc.Registry().Register(spec)
+
+	name := ModelName(spec.ID)
+	if name != "plugin_file-system_editFile" {
+		t.Fatalf("ModelName = %q", name)
+	}
+	if strings.ContainsAny(name, ":/") {
+		t.Fatalf("函数名仍含非法字符：%q", name)
+	}
+
+	resolved, ok := svc.Resolve(name)
+	if !ok || resolved.ID != spec.ID {
+		t.Fatalf("按函数名反查失败：%+v, %v", resolved, ok)
+	}
+	if _, ok := svc.Resolve(spec.ID); !ok {
+		t.Fatal("按内部 ID 查找失败")
+	}
+}

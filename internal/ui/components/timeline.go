@@ -29,6 +29,7 @@ type AgentStep struct {
 type Timeline struct {
 	steps        map[string][]AgentStep
 	open         map[string][]*bool
+	toolOpen     map[string][]*bool
 	toolsOpen    map[string]*bool
 	thinkingOpen map[string]*bool
 }
@@ -37,6 +38,7 @@ func NewTimeline() *Timeline {
 	return &Timeline{
 		steps:        map[string][]AgentStep{},
 		open:         map[string][]*bool{},
+		toolOpen:     map[string][]*bool{},
 		toolsOpen:    map[string]*bool{},
 		thinkingOpen: map[string]*bool{},
 	}
@@ -59,6 +61,20 @@ func (t *Timeline) StepOpen(messageID string, index int) *bool {
 	if index < 0 || index >= len(opens) {
 		return nil
 	}
+	return opens[index]
+}
+
+// ToolOpen 返回历史消息里第 index 个工具调用的折叠状态，默认收起。
+// 指针按需创建，保证同一调用每帧拿到同一地址。
+func (t *Timeline) ToolOpen(messageID string, index int) *bool {
+	if t == nil || messageID == "" || index < 0 {
+		return nil
+	}
+	opens := t.toolOpen[messageID]
+	for len(opens) <= index {
+		opens = append(opens, newBool(false))
+	}
+	t.toolOpen[messageID] = opens
 	return opens[index]
 }
 

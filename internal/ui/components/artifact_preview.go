@@ -78,7 +78,7 @@ func ArtifactPreview(c *ui.Context, detail contract.ArtifactDetail, data Artifac
 
 	if detail.Kind == contract.ArtifactLink {
 		ui.Column(c).FillWidth().Gap(6).Children(func() {
-			ui.Text(c, "链接产物").FontSize(12).Bold()
+			ui.Text(c, "链接文件").FontSize(12).Bold()
 			ui.Text(c, detail.URI).FontSize(12).TextColor(t.Accent)
 			ui.Text(c, "出于安全考虑，链接不会在应用内加载。").
 				FontSize(11).
@@ -117,7 +117,7 @@ func ArtifactPreview(c *ui.Context, detail contract.ArtifactDetail, data Artifac
 
 	case contract.ArtifactCode, contract.ArtifactHTML:
 		if detail.Kind == contract.ArtifactHTML {
-			ui.Text(c, "网页产物只展示源码，请用浏览器打开查看效果。").
+			ui.Text(c, "网页文件只展示源码，请用浏览器打开查看效果。").
 				FontSize(11).
 				TextColor(t.TextMuted)
 		}

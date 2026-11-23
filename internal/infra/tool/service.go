@@ -61,6 +61,20 @@ func (s *Service) Registry() *Registry {
 	return s.registry
 }
 
+// Resolve 按模型侧函数名反查工具：先按内部 ID 查找，
+// 再按 ModelName 映射匹配，兼容供应商对函数名的字符限制。
+func (s *Service) Resolve(name string) (ToolSpec, bool) {
+	if spec, ok := s.registry.Lookup(name); ok {
+		return spec, true
+	}
+	for _, spec := range s.registry.List() {
+		if ModelName(spec.ID) == name {
+			return spec, true
+		}
+	}
+	return ToolSpec{}, false
+}
+
 // Available 返回指定 Agent 当前可用的工具。
 // 停用的应用工具、未授权或已不存在的插件工具都从结果中剔除，
 // 避免把不可调用的工具声明给模型。

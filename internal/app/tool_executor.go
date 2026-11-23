@@ -22,6 +22,8 @@ type ToolExecutor struct {
 	memory *MemoryService
 	// artifacts 在启动装配完成后注入；为 nil 时产物工具一律拒绝。
 	artifacts tool.ArtifactSink
+	// fs 执行工作区内的文件读写；为 nil 时文件工具一律拒绝。
+	fs *FSService
 }
 
 func NewToolExecutor(st *store.Store, plugins *tool.ProcessExecutor) *ToolExecutor {
@@ -43,7 +45,15 @@ func (e *ToolExecutor) SetArtifacts(artifacts tool.ArtifactSink) {
 	e.artifacts = artifacts
 }
 
+// SetFS 注入工作区文件服务，由 main 在路径解析完成后调用。
+func (e *ToolExecutor) SetFS(fs *FSService) {
+	e.fs = fs
+}
+
 func (e *ToolExecutor) Execute(ctx context.Context, call tool.Call) (tool.Result, error) {
+	if tool.IsFSTool(call.Tool.ID) {
+		return e.runFSTool(ctx, call)
+	}
 	if tool.IsArtifactTool(call.Tool.ID) {
 		return e.runArtifactTool(ctx, call)
 	}
@@ -63,6 +73,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, call tool.Call) (tool.Result
 		return e.plugins.Execute(ctx, call)
 	}
 	return tool.InProcess{}.Execute(ctx, call)
+}
+
+// runFSTool 执行工作区文件工具，并把写入或编辑的文件登记到文件库，
+// 这样对话里的文件条与文件库页面都能直接打开用户可见的原文件。
+func (e *ToolExecutor) runFSTool(ctx context.Context, call tool.Call) (tool.Result, error) {
+	if e.fs == nil {
+		return tool.Result{}, fmt.Errorf("工作区未启用")
+	}
+	result, path, err := e.fs.Execute(ctx, call)
+	if err != nil {
+		return result, err
+	}
+	if path == "" || e.artifacts == nil {
+		return result, nil
+	}
+	ref, regErr := e.artifacts.RegisterFile(ctx, call.ConversationID, path)
+	if regErr != nil {
+		return result, nil
+	}
+	result.Content += fmt.Sprintf("\n已加入文件库：[%s](artifact://%s)", ref.Title, ref.ID)
+	return result, nil
 }
 
 // runMemoryTool 分派写入、检索、修改、删除四个记忆工具。
@@ -205,10 +236,10 @@ func (e *ToolExecutor) runAgentHub(ctx context.Context, call tool.Call) (tool.Re
 	}
 }
 
-// runArtifactTool 保存可复用交付物，并返回便于模型引用的结果。
+// runArtifactTool 保存可复用文件，并返回便于模型引用的结果。
 func (e *ToolExecutor) runArtifactTool(ctx context.Context, call tool.Call) (tool.Result, error) {
 	if e.artifacts == nil {
-		return tool.Result{}, fmt.Errorf("产物服务未启用")
+		return tool.Result{}, fmt.Errorf("文件服务未启用")
 	}
 
 	var in tool.ArtifactInput
@@ -224,9 +255,11 @@ func (e *ToolExecutor) runArtifactTool(ctx context.Context, call tool.Call) (too
 	if ref.Size >= 1024 {
 		size = fmt.Sprintf("%.1f KB", float64(ref.Size)/1024)
 	}
-	content := fmt.Sprintf("已保存产物「%s」（ID：%s，类型：%s，大小：%s）。", ref.Title, ref.ID, ref.Kind, size)
+	// 结果里直接给出文件链接，模型引用时复制即可，正文与预览因此能联动。
+	link := fmt.Sprintf("[%s](artifact://%s)", ref.Title, ref.ID)
+	content := fmt.Sprintf("已保存文件「%s」（ID：%s，类型：%s，大小：%s）。引用时使用：%s", ref.Title, ref.ID, ref.Kind, size, link)
 	if ref.Filename != "" {
-		content = fmt.Sprintf("已保存产物「%s」（ID：%s，文件：%s，大小：%s）。", ref.Title, ref.ID, ref.Filename, size)
+		content = fmt.Sprintf("已保存文件「%s」（ID：%s，文件：%s，大小：%s）。引用时使用：%s", ref.Title, ref.ID, ref.Filename, size, link)
 	}
 	return tool.Result{Content: content}, nil
 }

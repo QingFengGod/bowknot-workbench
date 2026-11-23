@@ -70,6 +70,8 @@ type Page struct {
 	sessionDeleteID   string
 	// follow 为 true 时消息列表贴着底部，用户上滚后关闭，回到底部再恢复。
 	follow bool
+	// scrollToMessageID 在下一帧把指定消息滚动到可视区域，用于产物回链。
+	scrollToMessageID string
 	// lastMaxY 记录上一帧的最大滚动距离，用来判断内容是否变高。
 	lastMaxY float32
 
@@ -122,11 +124,11 @@ type Page struct {
 	lastTaskRevision uint64
 	lastTaskRefresh  time.Time
 
-	// 产物预览：页面持有当前产物与一次性读取的预览数据。
-	viewer               components.ArtifactViewer
-	artifactOpen         bool
-	artifactDeleteOpen   bool
+	// 文件预览：抽屉状态与删除确认统一由 ArtifactHost 管理。
+	artifactHost         *components.ArtifactHost
 	lastArtifactRevision uint64
+	// filesOpen 是「会话文件」抽屉的开关。
+	filesOpen bool
 
 	// 群聊协作：版本号用于刷新成员发言，运行中定时轮询流式内容。
 	lastGroupRevision uint64
@@ -158,6 +160,7 @@ func New(svc contract.AgentService, tasks contract.TaskService, artifacts contra
 		},
 		sessionMenuOpen: map[string]*bool{},
 		itemMenuOpen:    map[string]*bool{},
+		artifactHost:    components.NewArtifactHost(artifacts),
 	}
 	p.reloadAgents()
 	p.reloadModels()
@@ -231,27 +234,24 @@ func (p *Page) View(c *ui.Context) {
 		OnChanged: p.reloadMessages,
 	})
 	p.artifactDrawer(c)
+	components.SessionFilesDrawer(c, &p.filesOpen, components.SessionArtifacts(p.messages), p.openArtifact)
 }
 
-// openArtifact 打开产物预览抽屉。
+// openArtifact 打开文件预览抽屉。
 func (p *Page) openArtifact(id string) {
 	if p.artifacts == nil || id == "" {
 		return
 	}
-	p.viewer.Open(p.artifacts, id)
-	p.artifactOpen = true
+	p.artifactHost.Open(id)
 }
 
 func (p *Page) artifactDrawer(c *ui.Context) {
-	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
-		Open:   &p.artifactOpen,
-		Viewer: p.viewer,
-		OnDelete: func() {
-			p.artifactDeleteOpen = true
+	p.artifactHost.Render(c, components.ArtifactHostProps{
+		OnReveal: func(messageID string) {
+			p.follow = false
+			p.scrollToMessageID = messageID
 		},
-	})
-	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
-		p.deleteArtifact(p.viewer.Detail.ID)
+		OnDelete: p.deleteArtifact,
 	})
 }
 
@@ -266,8 +266,7 @@ func (p *Page) deleteArtifact(id string) {
 				p.sendErr = err.Error()
 				return
 			}
-			p.artifactOpen = false
-			p.viewer = components.ArtifactViewer{}
+			p.artifactHost.Close()
 			p.reloadMessages()
 			p.reloadTasks()
 		})
@@ -312,6 +311,9 @@ func (p *Page) chatHeader(c *ui.Context, progress float32) {
 			})
 
 			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				if components.SessionFilesButton(c, len(components.SessionArtifacts(p.messages))) {
+					p.filesOpen = true
+				}
 				memBtn := ui.ButtonBase(c).
 					Width(22).
 					Height(22).
@@ -532,12 +534,14 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	var props components.MessageViewProps
 	if task != nil {
 		props = components.MessageViewProps{
-			Message:      m,
-			AvatarText:   avatar,
-			Steps:        p.timeline.Steps(m.ID),
-			StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
-			ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
-			ToolsOpen:    p.timeline.ToolsOpen(m.ID),
+			Message:        m,
+			AvatarText:     avatar,
+			OnOpenArtifact: p.openArtifact,
+			Steps:          p.timeline.Steps(m.ID),
+			StepOpen:       func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+			ToolOpen:       func(index int) *bool { return p.timeline.ToolOpen(m.ID, index) },
+			ThinkingOpen:   p.timeline.ThinkingOpen(m.ID),
+			ToolsOpen:      p.timeline.ToolsOpen(m.ID),
 		}
 	} else {
 		showRetry := m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming
@@ -546,15 +550,17 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 			showRetry = false
 		}
 		props = components.MessageViewProps{
-			Message:      m,
-			AvatarText:   avatar,
-			ShowRetry:    showRetry,
-			Steps:        p.timeline.Steps(m.ID),
-			StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
-			ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
-			ToolsOpen:    p.timeline.ToolsOpen(m.ID),
-			OnStop:       func() { p.stop(p.conversationID()) },
-			OnRetry:      func() { p.regenerate(m.ID) },
+			Message:        m,
+			AvatarText:     avatar,
+			OnOpenArtifact: p.openArtifact,
+			ShowRetry:      showRetry,
+			Steps:          p.timeline.Steps(m.ID),
+			StepOpen:       func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+			ToolOpen:       func(index int) *bool { return p.timeline.ToolOpen(m.ID, index) },
+			ThinkingOpen:   p.timeline.ThinkingOpen(m.ID),
+			ToolsOpen:      p.timeline.ToolsOpen(m.ID),
+			OnStop:         func() { p.stop(p.conversationID()) },
+			OnRetry:        func() { p.regenerate(m.ID) },
 			OnDelete: func() {
 				p.deleteMessageID = m.ID
 				p.deleteMessageOpen = true
@@ -564,12 +570,14 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	}
 
 	if p.artifacts == nil || len(m.Artifacts) == 0 {
-		return components.MessageView(c, props)
+		props.OnOpenArtifact = nil
 	}
-	return ui.Column(c).FillWidth().Gap(6).Children(func() {
-		components.MessageView(c, props)
-		components.ArtifactList(c, m.Artifacts, p.openArtifact)
-	})
+	element := components.MessageView(c, props)
+	if p.scrollToMessageID != "" && m.ID == p.scrollToMessageID {
+		element.ScrollIntoView(ui.ScrollIntoViewOptions{Block: ui.ScrollCenter, Animation: &ui.Smooth})
+		p.scrollToMessageID = ""
+	}
+	return element
 }
 
 // taskReadOnlyBar 替换输入区：任务线程是主助手派发的内部工作记录。

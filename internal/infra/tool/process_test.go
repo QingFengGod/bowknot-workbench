@@ -16,30 +16,30 @@ import (
 	"bowknot-workbench/internal/store"
 )
 
-// buildFilesystemPlugin 编译内置 fs 插件，返回安装目录与可执行文件名。
+// buildWebSearchPlugin 编译内置搜索插件，返回安装目录与可执行文件名。
 // 进程执行器只认 manifest 声明的二进制，测试用真实编译产物验证协议。
-func buildFilesystemPlugin(t *testing.T, root string) (string, string) {
+func buildWebSearchPlugin(t *testing.T, root string) (string, string) {
 	t.Helper()
-	name := "bowknot-filesystem"
+	name := "bowknot-websearch"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	dir := filepath.Join(root, "plugins", "file-system", "1.0.2")
+	dir := filepath.Join(root, "plugins", "web-search", "1.0.0")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("创建安装目录失败：%v", err)
 	}
 	target := filepath.Join(dir, name)
-	build := exec.Command("go", "build", "-o", target, "../../../cmd/plugin-filesystem")
+	build := exec.Command("go", "build", "-o", target, "../../../cmd/plugin-websearch")
 	build.Dir = "."
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("编译 fs 插件失败：%v\n%s", err, output)
+		t.Fatalf("编译搜索插件失败：%v\n%s", err, output)
 	}
 	return dir, name
 }
 
 func TestProcessExecutorCallsNativePlugin(t *testing.T) {
 	root := t.TempDir()
-	installDir, binary := buildFilesystemPlugin(t, root)
+	installDir, binary := buildWebSearchPlugin(t, root)
 
 	st, err := store.Open(context.Background(), store.Options{
 		Path:   filepath.Join(root, "test.db"),
@@ -51,9 +51,9 @@ func TestProcessExecutorCallsNativePlugin(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 
 	plugin := domain.Plugin{
-		ID:         "file-system",
-		Name:       "文件系统",
-		Version:    "1.0.2",
+		ID:         "web-search",
+		Name:       "网页搜索",
+		Version:    "1.0.0",
 		InstallDir: installDir,
 		Runtime: domain.Runtime{
 			Type:     "native",
@@ -69,33 +69,19 @@ func TestProcessExecutorCallsNativePlugin(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	result, err := executor.Execute(ctx, Call{
-		Tool: ToolSpec{
-			ID:       "plugin:file-system/listFiles",
-			Name:     "listFiles",
-			Source:   SourcePlugin,
-			SourceID: "file-system",
-		},
-		Arguments: `{"path":"."}`,
-	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(result.Content, "目录：") {
-		t.Fatalf("listFiles 结果 = %q", result.Content)
-	}
 
-	// 越权路径必须被插件自身拒绝。
-	if _, err := executor.Execute(ctx, Call{
+	// 空关键词会在插件内直接报错，用来验证 stdio JSON-RPC 往返而不依赖网络。
+	_, err = executor.Execute(ctx, Call{
 		Tool: ToolSpec{
-			ID:       "plugin:file-system/readFile",
-			Name:     "readFile",
+			ID:       "plugin:web-search/searchWeb",
+			Name:     "searchWeb",
 			Source:   SourcePlugin,
-			SourceID: "file-system",
+			SourceID: "web-search",
 		},
-		Arguments: `{"path":"/etc/passwd"}`,
-	}); err == nil || !strings.Contains(err.Error(), "超出插件授权范围") {
-		t.Fatalf("越权读取 error = %v", err)
+		Arguments: `{"query":""}`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "query 不能为空") {
+		t.Fatalf("searchWeb 校验 error = %v", err)
 	}
 }
 

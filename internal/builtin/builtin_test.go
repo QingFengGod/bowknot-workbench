@@ -127,8 +127,8 @@ func TestEmbeddedPackages(t *testing.T) {
 	if !hasApp(apps, "quick-note") {
 		t.Fatalf("缺少内置应用 quick-note：%+v", apps)
 	}
-	if !hasPlugin(plugins, "file-system") {
-		t.Fatalf("缺少内置插件 file-system：%+v", plugins)
+	if !hasPlugin(plugins, "web-search") {
+		t.Fatalf("缺少内置插件 web-search：%+v", plugins)
 	}
 
 	// 安装目录必须真实存在，且记录来源标记为 builtin。

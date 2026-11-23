@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"bowknot-workbench/internal/domain"
@@ -144,4 +145,24 @@ func PluginSpec(pluginID string, t domain.Tool) ToolSpec {
 		Parameters:  t.Parameters,
 		Timeout:     time.Duration(t.TimeoutMS) * time.Millisecond,
 	}
+}
+
+// ModelName 把工具 ID 转成模型供应商可接受的函数名。
+// 多数 OpenAI 兼容接口只允许字母、数字、下划线与连字符，
+// 因此 app:/plugin: 前缀里的冒号和斜杠需要替换掉。
+func ModelName(id string) string {
+	var builder strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	name := builder.String()
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	return name
 }

@@ -16,12 +16,14 @@ const (
 
 // ArtifactBrief 是消息与任务卡片使用的产物摘要。
 type ArtifactBrief struct {
-	ID        string       `json:"id"`
-	Title     string       `json:"title"`
-	Kind      ArtifactKind `json:"kind"`
-	MIME      string       `json:"mime,omitempty"`
-	Size      int64        `json:"size"`
-	CreatedAt int64        `json:"createdAt"`
+	ID    string       `json:"id"`
+	Title string       `json:"title"`
+	Kind  ArtifactKind `json:"kind"`
+	MIME  string       `json:"mime,omitempty"`
+	// Filename 是落盘文件名，正文里的文件引用按它匹配。
+	Filename  string `json:"filename,omitempty"`
+	Size      int64  `json:"size"`
+	CreatedAt int64  `json:"createdAt"`
 	// Available 为 false 表示文件已被移动或删除。
 	Available bool `json:"available"`
 }
@@ -36,6 +38,8 @@ type ArtifactDetail struct {
 	// Path 是文件产物的绝对路径；链接为空。
 	Path string `json:"path,omitempty"`
 	URI  string `json:"uri,omitempty"`
+	// External 表示产物只登记了外部文件，删除时不会删除原文件。
+	External bool `json:"external,omitempty"`
 	// Summary 是一句话说明，可空。
 	Summary string `json:"summary,omitempty"`
 	// SourceKind / SourceName 标识产物来源（main / agent / group）。

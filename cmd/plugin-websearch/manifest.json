@@ -1,0 +1,50 @@
+{
+  "id": "web-search",
+  "name": "网页搜索",
+  "version": "1.0.0",
+  "description": "搜索公开网页并返回标题、链接与摘要，默认解析 Bing 中文结果，可选博查或 Tavily",
+  "runtime": {
+    "type": "native",
+    "commands": {
+      "windows-amd64": "bin/windows-amd64/bowknot-websearch.exe",
+      "darwin-amd64": "bin/darwin-amd64/bowknot-websearch",
+      "darwin-arm64": "bin/darwin-arm64/bowknot-websearch"
+    }
+  },
+  "permissions": {
+    "fs": ["$DATA/**"],
+    "net": [
+      "https://cn.bing.com",
+      "https://html.duckduckgo.com",
+      "https://api.bochaai.com",
+      "https://api.tavily.com"
+    ],
+    "host": ["cn.bing.com", "html.duckduckgo.com", "api.bochaai.com", "api.tavily.com"],
+    "timeoutMs": 30000
+  },
+  "tools": [
+    {
+      "name": "searchWeb",
+      "description": "搜索公开网页，返回标题、链接与摘要；中文查询优先使用 Bing 中文结果，可选限定站点",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "搜索关键词"
+          },
+          "count": {
+            "type": "integer",
+            "description": "返回条数，1-10，默认 5"
+          },
+          "site": {
+            "type": "string",
+            "description": "可选，限定站点域名，例如 example.com"
+          }
+        },
+        "required": ["query"]
+      },
+      "timeoutMs": 30000
+    }
+  ]
+}

@@ -8,7 +8,7 @@ import (
 )
 
 const artifactColumns = `id, conversation_id, task_id, message_id, title, kind, mime, filename,
-	relative_path, uri, size, summary, created_at`
+	relative_path, uri, size, summary, created_at, source_path`
 
 // ArtifactFilter 描述产物查询条件，零值字段表示不过滤。
 type ArtifactFilter struct {
@@ -34,9 +34,10 @@ func (a *ArtifactStore) Create(ctx context.Context, item domain.Artifact) error 
 	}
 
 	_, err := a.s.q.ExecContext(ctx,
-		`INSERT INTO artifact(`+artifactColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO artifact(`+artifactColumns+`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ConversationID, item.TaskID, item.MessageID, item.Title, string(item.Kind),
 		item.MIME, item.Filename, item.RelativePath, item.URI, item.Size, item.Summary, item.CreatedAt,
+		item.SourcePath,
 	)
 	return wrapErr(err)
 }
@@ -173,6 +174,7 @@ func scanArtifact(row rowScanner) (domain.Artifact, error) {
 	err := row.Scan(
 		&item.ID, &item.ConversationID, &item.TaskID, &item.MessageID, &item.Title, &kind,
 		&item.MIME, &item.Filename, &item.RelativePath, &item.URI, &item.Size, &item.Summary, &item.CreatedAt,
+		&item.SourcePath,
 	)
 	item.Kind = domain.ArtifactKind(kind)
 	return item, err

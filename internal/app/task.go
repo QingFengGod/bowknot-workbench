@@ -721,7 +721,7 @@ func (s *TaskService) snapshotMemory(task domain.Task) {
 	}
 
 	if artifacts, err := s.store.Artifacts.ListByTaskIDs(context.Background(), []string{task.ID}); err == nil && len(artifacts) > 0 {
-		content += fmt.Sprintf(" 产出 %d 个产物。", len(artifacts))
+		content += fmt.Sprintf(" 产出 %d 个文件。", len(artifacts))
 	}
 
 	if _, err := s.memory.Remember(context.Background(), task.AssigneeID, task.ThreadConversationID,

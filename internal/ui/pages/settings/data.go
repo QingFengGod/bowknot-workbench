@@ -35,7 +35,7 @@ func (p *Page) loadDataInfo() {
 		{Label: "日志", Path: p.logsPath},
 		{Label: "应用", Path: filepath.Join(p.dataRoot, "apps")},
 		{Label: "插件", Path: filepath.Join(p.dataRoot, "plugins")},
-		{Label: "产物", Path: filepath.Join(p.dataRoot, "artifacts")},
+		{Label: "工作区", Path: filepath.Join(p.dataRoot, "workspace")},
 		{Label: "临时文件", Path: filepath.Join(p.dataRoot, "tmp")},
 	}
 	for i := range items {

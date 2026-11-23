@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -269,5 +270,75 @@ func TestToolLoopStopsAtMaxRounds(t *testing.T) {
 	}
 	if len(calls) != maxToolRounds {
 		t.Fatalf("工具调用次数 = %d, want %d", len(calls), maxToolRounds)
+	}
+}
+
+// TestDangerousToolKeepsMessageID 验证危险工具审批后仍带着消息 ID 执行，
+// 这样写入的文件才能登记到当前消息，出现在文件条与会话文件里。
+func TestDangerousToolKeepsMessageID(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("创建工作区失败：%v", err)
+	}
+	st := openTestStore(t, filepath.Join(root, "test.db"), false)
+
+	hub := NewApprovalHub()
+	artifacts := NewArtifactService(st, root, filepath.Join(workspace, "artifacts"), testLogger())
+	exec := NewToolExecutor(st, nil)
+	exec.SetArtifacts(artifacts)
+	exec.SetFS(NewFSService(workspace))
+	tools := tool.NewService(tool.Options{Store: st, Logger: testLogger(), Approver: hub.Approve, Executor: exec})
+	tools.RegisterBuiltin(tool.FSToolSpecs()...)
+
+	provider := llm.NewFake(llm.FakeOptions{
+		Interval:  time.Millisecond,
+		ChunkSize: 4096,
+		Reply: func(call int, req llm.ChatRequest) llm.FakeReply {
+			if call == 0 {
+				return llm.FakeReply{ToolCalls: []llm.ToolCall{{
+					ID:        "call-write",
+					Name:      tool.WriteFileToolID,
+					Arguments: `{"path":"docs/报告.md","content":"# 报告"}`,
+				}}}
+			}
+			return llm.FakeReply{Content: "已经写入报告"}
+		},
+	})
+
+	svc := NewAssistantService(st, testLogger(), provider, tools, hub)
+	svc.SetArtifacts(artifacts)
+	session := svc.CreateSession()
+	messageID, events, err := svc.Send(session.ID, "写一份报告", "bk-pro")
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	sawApproval := false
+	collectEvents(t, events, func(ev contract.ChatEvent) {
+		if ev.Type != contract.ChatEventApproval {
+			return
+		}
+		sawApproval = true
+		svc.ResolveApproval(ev.RunID, ev.ToolCallID, true)
+	})
+	if !sawApproval {
+		t.Fatal("未收到危险工具审批事件")
+	}
+
+	items, err := st.Artifacts.ListByMessageIDs(context.Background(), []string{messageID})
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("消息关联文件 = %+v, want 1", items)
+	}
+	if items[0].SourcePath != filepath.Join(workspace, "docs", "报告.md") {
+		t.Fatalf("文件来源路径 = %q", items[0].SourcePath)
+	}
+
+	messages := svc.Messages(session.ID)
+	if len(messages) == 0 || len(messages[len(messages)-1].Artifacts) != 1 {
+		t.Fatalf("消息没有带上文件条：%+v", messages)
 	}
 }

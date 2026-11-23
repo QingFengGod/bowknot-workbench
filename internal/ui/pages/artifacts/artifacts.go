@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"bowknot-workbench/internal/contract"
@@ -49,14 +50,18 @@ type Page struct {
 	lastRevision uint64
 	ownerOpen    bool
 
-	viewer             components.ArtifactViewer
-	viewerOpen         bool
-	artifactDeleteOpen bool
-	errText            string
+	// 文件预览：抽屉状态与删除确认统一由 ArtifactHost 管理。
+	artifactHost *components.ArtifactHost
+	// grid 是文件卡片的网格布局状态，宽屏时自动排成多列。
+	grid    ui.GridState
+	errText string
 }
 
 func New(svc contract.ArtifactService, agents contract.AgentService, hooks Hooks) *Page {
-	return &Page{svc: svc, agents: agents, hooks: hooks, ownerLabel: "全部来源"}
+	return &Page{
+		svc: svc, agents: agents, hooks: hooks, ownerLabel: "全部来源",
+		artifactHost: components.NewArtifactHost(svc),
+	}
 }
 
 // OnShow 在切换到本页时刷新来源列表与产物。
@@ -124,12 +129,12 @@ func (p *Page) header(c *ui.Context) {
 
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
-			ui.Text(c, "产物").FontSize(18).Bold()
-			ui.Text(c, fmt.Sprintf("共 %d 个交付物", len(p.items))).FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, "文件库").FontSize(18).Bold()
+			ui.Text(c, fmt.Sprintf("共 %d 个文件", len(p.items))).FontSize(11).TextColor(t.TextMuted)
 		})
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			search := ui.TextInput(c, &p.search).
-				Placeholder("搜索产物标题").
+				Placeholder("搜索文件名").
 				Width(220).
 				MaxLength(60)
 			if search.Changed() {
@@ -227,55 +232,55 @@ func (p *Page) list(c *ui.Context) {
 	if len(p.items) == 0 {
 		components.EmptyState(c, components.EmptyProps{
 			Icon:  components.IconArtifact,
-			Title: "还没有产物",
-			Hint:  "员工产出文档、图片或链接后，会自动出现在这里。",
+			Title: "文件库还是空的",
+			Hint:  "Agent 写入工作区的文件会自动出现在这里。",
 		})
 		return
 	}
 
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).FillWidth().Gap(6).Children(func() {
-			for _, detail := range p.items {
-				item := detail
-				meta := components.ArtifactKindText(item.Kind)
-				if item.Size > 0 {
-					meta += " · " + format.Size(item.Size)
+	// 宽屏时排成多列，避免一行只有一个文件显得空旷。
+	p.grid.Key = func(i int) any { return p.items[i].ID }
+	ui.GridView(c, &p.grid, len(p.items), 320, 56, func(i int) {
+		item := p.items[i]
+		meta := components.ArtifactKindText(item.Kind)
+		if item.Size > 0 {
+			meta += " · " + format.Size(item.Size)
+		}
+		if item.SourceName != "" {
+			meta += " · " + item.SourceName
+		}
+		if item.CreatedAt > 0 {
+			meta += " · " + format.Time(item.CreatedAt)
+		}
+		components.ArtifactCard(c, components.ArtifactCardProps{
+			Artifact: item.ArtifactBrief,
+			Meta:     meta,
+			Stretch:  true,
+			OnOpen:   func() { p.openArtifact(item.ID) },
+			Actions: func(c *ui.Context) bool {
+				if !components.TextButton(c, "复制路径", false).Clicked() {
+					return false
 				}
-				if item.SourceName != "" {
-					meta += " · " + item.SourceName
+				target := item.Path
+				if item.Kind == contract.ArtifactLink {
+					target = item.URI
 				}
-				if item.CreatedAt > 0 {
-					meta += " · " + format.Time(item.CreatedAt)
-				}
-				components.ArtifactCard(c, components.ArtifactCardProps{
-					Artifact: item.ArtifactBrief,
-					Meta:     meta,
-					OnOpen:   func() { p.openArtifact(item.ID) },
-				})
-			}
+				mygo.Clipboard.WriteText(target)
+				return true
+			},
 		})
-	})
+	}).Grow(1)
 }
 
 func (p *Page) openArtifact(id string) {
 	if p.svc == nil || id == "" {
 		return
 	}
-	p.viewer.Open(p.svc, id)
-	p.viewerOpen = true
+	p.artifactHost.Open(id)
 }
 
 func (p *Page) artifactDrawer(c *ui.Context) {
-	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
-		Open:   &p.viewerOpen,
-		Viewer: p.viewer,
-		OnDelete: func() {
-			p.artifactDeleteOpen = true
-		},
-	})
-	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
-		p.deleteArtifact(p.viewer.Detail.ID)
-	})
+	p.artifactHost.Render(c, components.ArtifactHostProps{OnDelete: p.deleteArtifact})
 }
 
 func (p *Page) deleteArtifact(id string) {
@@ -297,8 +302,7 @@ func (p *Page) deleteArtifact(id string) {
 				return
 			}
 			p.errText = ""
-			p.viewerOpen = false
-			p.viewer = components.ArtifactViewer{}
+			p.artifactHost.Close()
 			p.reload(true)
 		})
 	}()

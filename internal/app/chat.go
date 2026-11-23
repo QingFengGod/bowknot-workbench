@@ -43,16 +43,22 @@ const (
 		"示例：「我以后都用简体中文回复」→ 调用；「我在杭州做后端，最近在重构支付系统」→ 调用（可拆成两条）；「今天天气怎么样」→ 不调用。\n" +
 		"如果系统提示词里没有【长期记忆】块，说明目前还没有任何记忆，这是正常的，按上面的规则正常写入即可。" +
 		"调用记忆工具时不要向用户宣告，也不要因此中断正常回复。"
+	// fileToolGuide 说明工作区文件工具，避免模型把文件写到工作区外，
+	// 或只把长内容贴在回复里而不落盘。
+	fileToolGuide = "需要生成或修改文件时，直接使用内置文件工具：builtin_write_file 写入、builtin_edit_file 精确替换、builtin_list_dir 查看目录、builtin_make_dir 建目录、builtin_glob 查找文件、builtin_search_files 搜索内容。" +
+		"所有路径都相对于工作区，例如 docs/报告.md；不要使用绝对路径或 ..，也不要尝试访问工作区以外的文件。" +
+		"生成报告、代码、文档等交付物时优先写入文件，写完后在回复里用工具返回的 [文件名](artifact://ID) 链接引用，不要重复整段内容。"
 	// assistantSystemPrompt 是内置助手的全局规则与人设使用说明。
 	// 明确身份完全由用户设定，避免模型把默认姓名当成不可更改的产品身份而拒绝改名。
 	assistantSystemPrompt = "你是一个由用户完全自定义的私人助手，当前运行在 bowknot-workbench 中，用简洁的中文回答用户的问题。" +
 		globalRules +
 		memoryToolGuide +
+		fileToolGuide +
 		"你的姓名、性别、年龄、性格、角色或职责、对用户的称呼、其它要求都完全由用户设定，不存在任何不可更改的公司、产品或预设身份。" +
 		"用户要求修改这些信息（包括改名、换称呼、设定角色）时，这是完全允许的，必须立即调用 builtin_update_persona 工具，只传需要修改的字段，不要说不能修改，也不要用预设身份作为拒绝理由。" +
 		"修改成功后，按新的姓名与称呼回应用户。"
-	defaultAgentSystemPrompt = "你是 bowknot-workbench 里的一个 Agent，请用简洁的中文回复用户。" + globalRules + memoryToolGuide
-	groupSystemPrompt        = "这是多 Agent 群聊，请以「助理」的身份协调群内成员推进任务，用简洁的中文回复。" + globalRules + memoryToolGuide
+	defaultAgentSystemPrompt = "你是 bowknot-workbench 里的一个 Agent，请用简洁的中文回复用户。" + globalRules + memoryToolGuide + fileToolGuide
+	groupSystemPrompt        = "这是多 Agent 群聊，请以「助理」的身份协调群内成员推进任务，用简洁的中文回复。" + globalRules + memoryToolGuide + fileToolGuide
 )
 
 // streamRunner 管理每个会话唯一的生成任务，保证同一会话不会并发写入。
@@ -410,13 +416,17 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 	}
 	toolID := strings.TrimSpace(call.Name)
 	arguments := call.Arguments
-	// 记忆工具属于内部动作，只落库审计，不向 UI 推送工具卡片。
-	hidden := tool.IsMemoryTool(toolID)
 
+	// 模型侧拿到的可能是去掉冒号与斜杠的安全函数名，这里先还原成内部工具 ID。
 	var spec tool.ToolSpec
 	if target.tools != nil {
-		spec, _ = target.tools.Registry().Lookup(toolID)
+		if resolved, ok := target.tools.Resolve(toolID); ok {
+			spec = resolved
+			toolID = resolved.ID
+		}
 	}
+	// 记忆工具属于内部动作，只落库审计，不向 UI 推送工具卡片。
+	hidden := tool.IsMemoryTool(toolID)
 
 	record := domain.ToolCall{
 		ID:             id.New(),
@@ -453,7 +463,8 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 	if spec.Dangerous && target.approvals != nil {
 		token := target.approvals.Register(target.runID, callID)
 		registered = true
-		execCtx = tool.WithApprovalToken(genCtx, token)
+		// 审批令牌要叠加在带消息 ID 的上下文上，否则登记文件时溯源不到消息。
+		execCtx = tool.WithApprovalToken(execCtx, token)
 		if !emit(contract.ChatEvent{
 			Type:       contract.ChatEventApproval,
 			ToolCallID: callID,
@@ -528,11 +539,11 @@ func (target genStream) finishToolCall(id, result string, status domain.ToolCall
 }
 
 // toolSchemas 把注册表工具映射为模型可声明的工具。
-// 名字直接用注册表 ID，保证不同来源的同名工具不会冲突。
+// 名字使用供应商能接受的字符集，内部 ID 由 Service.Resolve 反查。
 func toolSchemas(specs []tool.ToolSpec) []llm.ToolSchema {
 	out := make([]llm.ToolSchema, 0, len(specs))
 	for _, spec := range specs {
-		out = append(out, llm.ToolSchema{Name: spec.ID, Description: spec.Description, Parameters: spec.Parameters})
+		out = append(out, llm.ToolSchema{Name: tool.ModelName(spec.ID), Description: spec.Description, Parameters: spec.Parameters})
 	}
 	return out
 }
@@ -704,6 +715,7 @@ func attachArtifacts(st *store.Store, service *ArtifactService, items []contract
 				Title:     item.Title,
 				Kind:      contract.ArtifactKind(item.Kind),
 				MIME:      item.MIME,
+				Filename:  item.Filename,
 				Size:      item.Size,
 				CreatedAt: item.CreatedAt,
 				Available: true,

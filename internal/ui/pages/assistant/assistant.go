@@ -68,6 +68,8 @@ type Page struct {
 	menuOpen map[string]*bool
 	// follow 为 true 时消息列表贴着底部，用户上滚后关闭，回到底部再恢复。
 	follow bool
+	// scrollToMessageID 在下一帧把指定消息滚动到可视区域，用于产物回链。
+	scrollToMessageID string
 	// lastMaxY 记录上一帧的最大滚动距离，用来判断内容是否变高。
 	lastMaxY float32
 
@@ -118,26 +120,27 @@ type Page struct {
 	transferErr     string
 	transferAgents  []contract.AgentInfo
 
-	// 产物预览：页面持有当前产物与一次性读取的预览数据。
-	viewer               components.ArtifactViewer
-	artifactOpen         bool
-	artifactDeleteOpen   bool
+	// 文件预览：抽屉状态与删除确认统一由 ArtifactHost 管理。
+	artifactHost         *components.ArtifactHost
 	lastArtifactRevision uint64
+	// filesOpen 是「会话文件」抽屉的开关。
+	filesOpen bool
 }
 
 // New 创建助手页。
 func New(svc contract.AssistantService, agents contract.AgentService, tasks contract.TaskService, artifacts contract.ArtifactService, memory contract.MemoryService, hooks Hooks) *Page {
 	p := &Page{
-		svc:       svc,
-		agents:    agents,
-		tasks:     tasks,
-		artifacts: artifacts,
-		memory:    memory,
-		hooks:     hooks,
-		streams:   map[string]string{},
-		timeline:  components.NewTimeline(),
-		follow:    true,
-		menuOpen:  map[string]*bool{},
+		svc:          svc,
+		agents:       agents,
+		tasks:        tasks,
+		artifacts:    artifacts,
+		memory:       memory,
+		hooks:        hooks,
+		streams:      map[string]string{},
+		timeline:     components.NewTimeline(),
+		follow:       true,
+		menuOpen:     map[string]*bool{},
+		artifactHost: components.NewArtifactHost(artifacts),
 		groupOpen: map[string]*bool{
 			"pinned":    boolValue(true),
 			"today":     boolValue(true),
@@ -202,6 +205,7 @@ func (p *Page) View(c *ui.Context) {
 	p.transferModal(c)
 	p.processDrawer(c)
 	p.artifactDrawer(c)
+	components.SessionFilesDrawer(c, &p.filesOpen, components.SessionArtifacts(p.messages), p.openArtifact)
 	components.MemoryModal(c, components.MemoryModalProps{
 		Service:   p.memory,
 		Open:      &p.memoryOpen,
@@ -238,6 +242,9 @@ func (p *Page) header(c *ui.Context, panelProgress float32) {
 			})
 
 			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				if components.SessionFilesButton(c, len(components.SessionArtifacts(p.messages))) {
+					p.filesOpen = true
+				}
 				if p.agents != nil {
 					transferBtn := ui.ButtonBase(c).
 						Width(22).
@@ -430,25 +437,29 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 	}
 
 	props := components.MessageViewProps{
-		Message:      m,
-		AvatarText:   "助手",
-		ShowRetry:    m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
-		Steps:        p.timeline.Steps(m.ID),
-		StepOpen:     func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
-		ThinkingOpen: p.timeline.ThinkingOpen(m.ID),
-		ToolsOpen:    p.timeline.ToolsOpen(m.ID),
-		OnStop:       func() { p.stop(m.ConversationID) },
-		OnRetry:      func() { p.regenerate(m.ID) },
-		OnDelete:     func() { p.openDeleteMessage(m) },
-		OnMemory:     func() { p.memoryOpen = true },
+		Message:        m,
+		AvatarText:     "助手",
+		OnOpenArtifact: p.openArtifact,
+		ShowRetry:      m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
+		Steps:          p.timeline.Steps(m.ID),
+		StepOpen:       func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
+		ToolOpen:       func(index int) *bool { return p.timeline.ToolOpen(m.ID, index) },
+		ThinkingOpen:   p.timeline.ThinkingOpen(m.ID),
+		ToolsOpen:      p.timeline.ToolsOpen(m.ID),
+		OnStop:         func() { p.stop(m.ConversationID) },
+		OnRetry:        func() { p.regenerate(m.ID) },
+		OnDelete:       func() { p.openDeleteMessage(m) },
+		OnMemory:       func() { p.memoryOpen = true },
 	}
 	if len(m.Artifacts) == 0 || p.artifacts == nil {
-		return components.MessageView(c, props)
+		props.OnOpenArtifact = nil
 	}
-	return ui.Column(c).FillWidth().Gap(6).Children(func() {
-		components.MessageView(c, props)
-		components.ArtifactList(c, m.Artifacts, p.openArtifact)
-	})
+	element := components.MessageView(c, props)
+	if p.scrollToMessageID != "" && m.ID == p.scrollToMessageID {
+		element.ScrollIntoView(ui.ScrollIntoViewOptions{Block: ui.ScrollCenter, Animation: &ui.Smooth})
+		p.scrollToMessageID = ""
+	}
+	return element
 }
 
 // refreshTaskRevisions 在任务状态变化后刷新当前会话，让卡片状态保持最新。
@@ -559,34 +570,28 @@ func (p *Page) processMessage(c *ui.Context, m contract.ChatMessage, avatar stri
 	}
 
 	components.MessageView(c, components.MessageViewProps{
-		Message:    m,
-		AvatarText: avatar,
+		Message:        m,
+		AvatarText:     avatar,
+		OnOpenArtifact: p.openArtifact,
 	})
-	if p.artifacts != nil && len(m.Artifacts) > 0 {
-		components.ArtifactList(c, m.Artifacts, p.openArtifact)
-	}
 }
 
-// openArtifact 打开产物预览抽屉。
+// openArtifact 打开文件预览抽屉。
 func (p *Page) openArtifact(id string) {
 	if p.artifacts == nil || id == "" {
 		return
 	}
-	p.viewer.Open(p.artifacts, id)
-	p.artifactOpen = true
+	p.artifactHost.Open(id)
 }
 
 // artifactDrawer 渲染预览抽屉与删除确认。
 func (p *Page) artifactDrawer(c *ui.Context) {
-	components.ArtifactDrawer(c, components.ArtifactDrawerProps{
-		Open:   &p.artifactOpen,
-		Viewer: p.viewer,
-		OnDelete: func() {
-			p.artifactDeleteOpen = true
+	p.artifactHost.Render(c, components.ArtifactHostProps{
+		OnReveal: func(messageID string) {
+			p.follow = false
+			p.scrollToMessageID = messageID
 		},
-	})
-	components.ArtifactDeleteDialog(c, &p.artifactDeleteOpen, p.viewer.Detail.Title, func() {
-		p.deleteArtifact(p.viewer.Detail.ID)
+		OnDelete: p.deleteArtifact,
 	})
 }
 
@@ -601,8 +606,7 @@ func (p *Page) deleteArtifact(id string) {
 				p.sendErr = err.Error()
 				return
 			}
-			p.artifactOpen = false
-			p.viewer = components.ArtifactViewer{}
+			p.artifactHost.Close()
 			p.reloadMessages()
 			p.reloadProcess()
 		})

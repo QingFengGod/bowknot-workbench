@@ -141,6 +141,12 @@ func main() {
 	if err := builtin.EnsureInstalled(lc.Context(), db, installer, logger); err != nil {
 		logger.Warn("内置包安装未完成，将在下次启动重试", "error", err)
 	}
+	// 文件系统插件已改为内置工具：清掉旧版随包安装的插件，避免同名能力重复暴露给模型。
+	if legacy, err := db.Plugins.Get(lc.Context(), "file-system"); err == nil && legacy.SourceType == pkgs.SourceTypeBuiltin {
+		if err := installer.Uninstall(lc.Context(), pkgs.KindPlugin, "file-system", true); err != nil {
+			logger.Warn("移除旧版文件系统插件失败", "error", err)
+		}
+	}
 	installer.SweepOldVersions(lc.Context())
 
 	// 工具服务是应用/插件工具的唯一执行入口，启动时把已安装的工具同步进注册表。
@@ -148,9 +154,12 @@ func main() {
 	approvals := app.NewApprovalHub()
 	// 产物服务统一托管 Agent 交付物：校验来源、落盘、写库与删除。
 	artifacts := app.NewArtifactService(db, dataPaths.Root, dataPaths.Artifacts, logger)
+	// 文件系统工具统一限制在工作区内，写入的文件会直接登记到文件库。
+	workspaceFS := app.NewFSService(dataPaths.Workspace)
 	// ToolExecutor 内的 Agent 能力在 AgentService 创建后注入，这里先保留引用。
 	executor := app.NewToolExecutor(db, pluginProcesses)
 	executor.SetArtifacts(artifacts)
+	executor.SetFS(workspaceFS)
 	toolSvc := tool.NewService(tool.Options{
 		Store:    db,
 		Logger:   logger,
@@ -161,6 +170,7 @@ func main() {
 	builtinTools = append(builtinTools, tool.TaskToolSpecs()...)
 	builtinTools = append(builtinTools, tool.ArtifactToolSpec())
 	builtinTools = append(builtinTools, tool.MemoryToolSpecs()...)
+	builtinTools = append(builtinTools, tool.FSToolSpecs()...)
 	toolSvc.RegisterBuiltin(builtinTools...)
 	if err := toolSvc.SyncApps(lc.Context()); err != nil {
 		logger.Warn("同步应用工具失败", "error", err)

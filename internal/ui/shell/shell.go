@@ -50,7 +50,7 @@ var navItems = []navItem{
 	{Route: "/assistant", Label: "助手", Icon: components.IconAssistant},
 	{Route: "/agents", Label: "agents", Icon: components.IconAgents},
 	{Route: "/tasks", Label: "任务", Icon: components.IconTasks},
-	{Route: "/artifacts", Label: "产物", Icon: components.IconArtifact},
+	{Route: "/files", Label: "文件库", Icon: components.IconArtifact},
 	{Route: "/plugins", Label: "插件", Icon: components.IconPlugins},
 	{Route: "/settings", Label: "设置", Icon: components.IconSettings},
 	{Route: "/aigc/generate", Label: "AIGC", Icon: components.IconAIGC},
@@ -114,8 +114,8 @@ func New(deps Deps) *Shell {
 				agentPage.OpenAgentChat(agentID)
 			},
 		}),
-		"/agents":    agentPage,
-		"/artifacts": artifacts.New(deps.Artifacts, deps.Agents, artifacts.Hooks{Update: s.update}),
+		"/agents": agentPage,
+		"/files":  artifacts.New(deps.Artifacts, deps.Agents, artifacts.Hooks{Update: s.update}),
 		"/tasks": tasks.New(deps.Tasks, deps.Agents, deps.Artifacts, tasks.Hooks{
 			Update: s.update,
 			OpenAgentChat: func(agentID string) {

@@ -23,7 +23,7 @@ func UserMessage(c *ui.Context, p UserMessageProps) ui.Element {
 		IsUser: true,
 		Body: func(c *ui.Context) {
 			if strings.TrimSpace(m.Content) != "" {
-				markdown.View(c, m.Content, messageMarkdown)
+				markdown.View(c, m.Content, messageMarkdown(c, m, nil))
 			}
 		},
 		Meta: func(c *ui.Context) {

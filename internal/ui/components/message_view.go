@@ -1,6 +1,8 @@
 package components
 
 import (
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -10,9 +12,91 @@ import (
 	"bowknot-workbench/internal/ui/format"
 )
 
-// messageMarkdown 沿用默认主题，只把行高调得更接近 Web 端正文。
-var messageMarkdown = &markdown.Options{
-	Theme: &markdown.Theme{LineHeight: 1.7},
+// artifactLinkScheme 是正文里指向产物的内部链接协议。
+const artifactLinkScheme = "artifact://"
+
+// messageMarkdown 为一条消息构建正文渲染配置：
+// 内联代码里的产物文件名变成可点击链接，点击后打开产物预览。
+// 只在消息自带产物里匹配，避免模型写出不存在的路径。
+func messageMarkdown(c *ui.Context, m contract.ChatMessage, onOpenArtifact func(id string)) *markdown.Options {
+	options := &markdown.Options{Theme: &markdown.Theme{LineHeight: 1.7}}
+	if len(m.Artifacts) == 0 || onOpenArtifact == nil {
+		return options
+	}
+
+	byName := make(map[string]contract.ArtifactBrief, len(m.Artifacts)*2)
+	byID := make(map[string]contract.ArtifactBrief, len(m.Artifacts))
+	for _, artifact := range m.Artifacts {
+		byID[artifact.ID] = artifact
+		for _, name := range []string{artifact.Title, artifact.Filename} {
+			key := artifactNameKey(name)
+			if key == "" {
+				continue
+			}
+			if _, exists := byName[key]; !exists {
+				byName[key] = artifact
+			}
+		}
+	}
+
+	options.CodeLink = func(code string) (string, bool) {
+		artifact, ok := byName[artifactNameKey(code)]
+		if !ok {
+			return "", false
+		}
+		return artifactLinkScheme + artifact.ID, true
+	}
+	options.OnLink = func(url string) {
+		if id, ok := strings.CutPrefix(url, artifactLinkScheme); ok {
+			onOpenArtifact(id)
+			return
+		}
+		// 只把明确的站外链接交给系统，相对路径与标题锚点保持原样不处理。
+		if isExternalLink(url) {
+			c.OpenURL(url)
+		}
+	}
+	options.Preview = func(ctx *ui.Context, dest string) func(tip ui.Element) {
+		id, ok := strings.CutPrefix(dest, artifactLinkScheme)
+		if !ok {
+			return nil
+		}
+		label := "预览文件"
+		if artifact, exists := byID[id]; exists && artifact.Title != "" {
+			label = "预览：" + artifact.Title
+		}
+		return func(tip ui.Element) {
+			tip.Padding(8).Children(func() {
+				ui.Text(ctx, label).FontSize(11)
+			})
+		}
+	}
+	return options
+}
+
+// isExternalLink 判断链接是否该交给系统打开。
+func isExternalLink(url string) bool {
+	lower := strings.ToLower(url)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "mailto:") ||
+		strings.HasPrefix(lower, "file://")
+}
+
+// artifactNameKey 归一化正文里的文件名，兼容路径、引号与 :行号 定位。
+func artifactNameKey(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, "`\"'")
+	name = strings.ReplaceAll(name, "\\", "/")
+	if index := strings.LastIndex(name, ":"); index > 0 {
+		if _, err := strconv.Atoi(name[index+1:]); err == nil {
+			name = name[:index]
+		}
+	}
+	if name == "" || name == "." || name == ".." {
+		return ""
+	}
+	return strings.ToLower(path.Base(name))
 }
 
 // MessageViewProps 描述一条对话消息的渲染。
@@ -20,12 +104,16 @@ type MessageViewProps struct {
 	Message contract.ChatMessage
 	// AvatarText 是助手头像里的文字，用户消息不显示。
 	AvatarText string
+	// OnOpenArtifact 打开正文文件引用指向的产物预览。
+	OnOpenArtifact func(id string)
 	// ShowRetry 控制「重答」入口，通常只给最后一条已完成的助手回复。
 	ShowRetry bool
 	// Steps 是实时累积的思考与工具调用，仅当前会话内有效。
 	Steps []AgentStep
 	// StepOpen 返回时间线步骤的折叠状态指针，由页面保证地址稳定。
 	StepOpen func(index int) *bool
+	// ToolOpen 返回历史消息里各工具调用的折叠状态指针。
+	ToolOpen func(index int) *bool
 	// ThinkingOpen 是历史消息思维链块的折叠状态。
 	ThinkingOpen *bool
 	// ToolsOpen 是历史消息工具调用分组的折叠状态。
@@ -48,17 +136,19 @@ func MessageView(c *ui.Context, p MessageViewProps) ui.Element {
 	}
 
 	return AgentMessage(c, AgentMessageProps{
-		Message:      p.Message,
-		AvatarText:   p.AvatarText,
-		Steps:        p.Steps,
-		StepOpen:     p.StepOpen,
-		ThinkingOpen: p.ThinkingOpen,
-		ToolsOpen:    p.ToolsOpen,
-		ShowRetry:    p.ShowRetry,
-		OnStop:       p.OnStop,
-		OnRetry:      p.OnRetry,
-		OnDelete:     p.OnDelete,
-		OnMemory:     p.OnMemory,
+		Message:        p.Message,
+		AvatarText:     p.AvatarText,
+		OnOpenArtifact: p.OnOpenArtifact,
+		Steps:          p.Steps,
+		StepOpen:       p.StepOpen,
+		ToolOpen:       p.ToolOpen,
+		ThinkingOpen:   p.ThinkingOpen,
+		ToolsOpen:      p.ToolsOpen,
+		ShowRetry:      p.ShowRetry,
+		OnStop:         p.OnStop,
+		OnRetry:        p.OnRetry,
+		OnDelete:       p.OnDelete,
+		OnMemory:       p.OnMemory,
 	})
 }
 
