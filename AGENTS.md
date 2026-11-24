@@ -49,7 +49,7 @@ internal/ui/
 ├── components/              公共组件与图标（Button、Card、Avatar、Drawer、Icon 等）
 ├── theme/                   品牌主题与明暗色 token
 └── format/                  时间、相对时间、文件大小格式化
-docs/                        infrastructure-plan.md（含实施状态）、operations.md（备份与恢复）
+docs/                        product-overview.md（产品总览、完成度、待确定项与运行说明）
 ```
 
 - 新页面实现后注册进 `shell.New` 的 `native` 表，路由与一级导航对齐
