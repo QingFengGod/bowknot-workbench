@@ -28,6 +28,8 @@ type TaskBrief struct {
 	Status       TaskStatus `json:"status"`
 	AssigneeID   string     `json:"assigneeId"`
 	AssigneeName string     `json:"assigneeName"`
+	// ThreadConversationID 是任务执行会话，用于从任务卡片跳到对应对话。
+	ThreadConversationID string `json:"threadConversationId"`
 }
 
 // TaskDetail 是任务列表与任务卡片使用的完整任务信息。

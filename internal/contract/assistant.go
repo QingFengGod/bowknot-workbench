@@ -74,6 +74,12 @@ type MessagePage struct {
 	HasMore bool          `json:"hasMore"`
 }
 
+// AttachmentInput 是一条待发送附件的本机路径。
+// 后端负责校验类型与大小，并把文件复制进工作区。
+type AttachmentInput struct {
+	Path string `json:"path"`
+}
+
 // ChatSession 是一个助手会话。
 type ChatSession struct {
 	ID      string `json:"id"`
@@ -186,7 +192,8 @@ type AssistantService interface {
 	PinSession(id string, pinned bool) error
 
 	// Send 追加用户消息并开始生成回复，事件通道按顺序给出流式快照。
-	Send(sessionID, text, modelID string) (messageID string, events <-chan ChatEvent, err error)
+	// attachments 为本轮附带的图片或文件；text 为空时至少需要一个附件。
+	Send(sessionID, text, modelID string, attachments []AttachmentInput) (messageID string, events <-chan ChatEvent, err error)
 	// AutoReply 在会话还没有助手回复时开始一次演示回复，已播放过则不再重复。
 	AutoReply(sessionID string) (messageID string, events <-chan ChatEvent, started bool)
 	// Regenerate 重新生成指定助手消息，保留消息在列表中的位置。

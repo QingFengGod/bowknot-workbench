@@ -56,6 +56,7 @@ const (
 const memoryDigestSystemPrompt = `你是 bowknot-workbench 的记忆摘要器。
 把给定的一周原子记忆压缩成 150-300 字的中文摘要，并给出 3-8 个关键词。
 摘要要保留可以据此查找原文的时间与主题线索，只压缩已有内容，不引入新事实。
+摘要沿用第三人称：指代用户用「用户」，指代 Agent 用「我」，不要用「你」指代用户。
 只输出 JSON：{"summary":"...","keywords":["..."]}。`
 
 type memoryOwner struct {
@@ -914,12 +915,12 @@ func renderMemoryBlock(items []domain.Memory) string {
 	}
 	var out strings.Builder
 	if len(userLines) > 0 {
-		out.WriteString("[用户全局记忆]\n")
+		out.WriteString("[用户全局记忆]（「用户」指当前用户，「我」指你自己）\n")
 		out.WriteString(strings.Join(userLines, "\n"))
 		out.WriteString("\n")
 	}
 	if len(agentLines) > 0 {
-		out.WriteString("[Agent 专属记忆]\n")
+		out.WriteString("[Agent 专属记忆]（「用户」指当前用户，「我」指你自己）\n")
 		out.WriteString(strings.Join(agentLines, "\n"))
 		out.WriteString("\n")
 	}

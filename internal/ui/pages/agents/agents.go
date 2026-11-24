@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"bowknot-workbench/internal/contract"
@@ -18,6 +19,8 @@ import (
 type Hooks struct {
 	// Update 在主线程修改页面状态并触发重绘，供后台流式事件使用。
 	Update func(fn func())
+	// SelectAttachments 打开系统文件选择器，返回选中的本地路径；取消时返回空切片。
+	SelectAttachments func() ([]string, error)
 }
 
 // Page 是 agents 页的原生实现：左侧 Agent / 群聊列表，中间对话区，
@@ -53,6 +56,13 @@ type Page struct {
 	draft      string
 	sendErr    string
 	focusDraft bool
+	// pending 是已选中、尚未发送的附件；仅员工直聊使用。
+	pending   []components.PendingAttachment
+	attachErr string
+	// thumbs 缓存已解码的消息图片缩略图，thumbPending 防止重复解码。
+	thumbs       map[string]ui.ImageSource
+	thumbPending map[string]bool
+	thumbConv    string
 	// mentionOpen 是群聊 @ 成员面板的开关，指针每帧指向同一地址。
 	mentionOpen bool
 
@@ -160,6 +170,8 @@ func New(svc contract.AgentService, tasks contract.TaskService, artifacts contra
 		},
 		sessionMenuOpen: map[string]*bool{},
 		itemMenuOpen:    map[string]*bool{},
+		thumbs:          map[string]ui.ImageSource{},
+		thumbPending:    map[string]bool{},
 		artifactHost:    components.NewArtifactHost(artifacts),
 	}
 	p.reloadAgents()
@@ -553,6 +565,7 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 			Message:        m,
 			AvatarText:     avatar,
 			OnOpenArtifact: p.openArtifact,
+			Images:         p.messageImages(m),
 			ShowRetry:      showRetry,
 			Steps:          p.timeline.Steps(m.ID),
 			StepOpen:       func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
@@ -704,6 +717,16 @@ func (p *Page) composer(c *ui.Context) {
 		Placeholder:    placeholder,
 		Error:          p.sendErr,
 		Submit:         p.sendText,
+		Attachments: func(c *ui.Context) {
+			if p.activeGroup() != nil {
+				return
+			}
+			components.AttachmentTray(c, p.pending, p.removeAttachment)
+			if p.attachErr != "" {
+				ui.Text(c, p.attachErr).FontSize(11).TextColor(c.Theme().Danger)
+			}
+		},
+		OnPaste: p.pasteAttachment,
 		Cancel: func() {
 			if streaming {
 				p.stop(p.conversationID())
@@ -711,6 +734,7 @@ func (p *Page) composer(c *ui.Context) {
 		},
 		OnInput: func() {
 			p.sendErr = ""
+			p.attachErr = ""
 			// 在群聊里输入 @ 时直接弹出成员列表，省去点击按钮。
 			if p.activeGroup() != nil && mentionsOpenTrigger(p.draft) {
 				p.mentionOpen = true
@@ -726,6 +750,10 @@ func (p *Page) composer(c *ui.Context) {
 				})
 			}
 
+			// 附件只支持员工直聊，群聊入口直接隐藏。
+			if p.activeGroup() == nil {
+				components.AttachButton(c, !streaming && len(p.pending) < maxPendingAttachments, p.attachFiles)
+			}
 			p.modelPicker(c)
 
 			if streaming {
@@ -735,7 +763,7 @@ func (p *Page) composer(c *ui.Context) {
 				}
 				return
 			}
-			enabled := strings.TrimSpace(p.draft) != ""
+			enabled := strings.TrimSpace(p.draft) != "" || len(p.pending) > 0
 			send := components.CircleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
 			if send.Tooltip("发送").Clicked() && enabled {
 				p.send()
@@ -1461,7 +1489,8 @@ func (p *Page) send() {
 
 func (p *Page) sendText(text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || p.svc == nil || p.streamingActive() || p.activeTask() != nil {
+	isGroup := p.activeGroup() != nil
+	if (text == "" && (isGroup || len(p.pending) == 0)) || p.svc == nil || p.streamingActive() || p.activeTask() != nil {
 		return false
 	}
 	if p.groupBusy() {
@@ -1473,12 +1502,21 @@ func (p *Page) sendText(text string) bool {
 	if conversationID == "" {
 		return false
 	}
-	messageID, events, err := p.svc.Send(conversationID, text, p.modelID())
+	attachments := make([]contract.AttachmentInput, 0, len(p.pending))
+	if !isGroup {
+		for _, item := range p.pending {
+			attachments = append(attachments, contract.AttachmentInput{Path: item.Path})
+		}
+	}
+	messageID, events, err := p.svc.Send(conversationID, text, p.modelID(), attachments)
 	if err != nil {
 		p.sendErr = err.Error()
 		return false
 	}
 
+	components.DiscardPending(p.pending)
+	p.pending = nil
+	p.attachErr = ""
 	p.draft = ""
 	p.sendErr = ""
 	p.mentionOpen = false
@@ -1629,9 +1667,9 @@ func (p *Page) resolveApproval(approved bool) {
 
 // ---------- 数据加载 ----------
 
-// OpenAgentChat 从其它页面跳转到员工的直聊会话：
-// 优先复用最近的非任务会话，没有直聊会话时自动创建一个。
-func (p *Page) OpenAgentChat(agentID string) {
+// OpenAgentChat 从其它页面跳转到员工的指定会话：
+// conversationID 命中任务线程时直接定位到该任务对话，否则复用最近直聊。
+func (p *Page) OpenAgentChat(agentID, conversationID string) {
 	agentID = strings.TrimSpace(agentID)
 	if p.svc == nil || agentID == "" {
 		return
@@ -1644,9 +1682,22 @@ func (p *Page) OpenAgentChat(agentID string) {
 	p.sessionsCollapsed = false
 	p.reloadSessions()
 
+	// 任务线程也要能打开：用户是从任务页点进来的，看的正是那段执行过程。
+	if conversationID != "" {
+		for i := range p.sessions {
+			if p.sessions[i].ID == conversationID {
+				p.activeSessionID = conversationID
+				p.reloadMessages()
+				p.stickToBottom()
+				p.focusDraft = true
+				return
+			}
+		}
+	}
+
 	var preferred *contract.AgentSession
 	for i := range p.sessions {
-		// 任务线程只读，不作为跳转目标。
+		// 任务线程只读，不作为默认跳转目标。
 		if _, isTask := p.tasksByThread[p.sessions[i].ID]; isTask {
 			continue
 		}
@@ -1711,6 +1762,12 @@ func (p *Page) reloadSessions() {
 	p.reloadTasks()
 }
 
+// maxPendingAttachments 与后端校验保持一致：单条消息最多 4 个附件。
+const maxPendingAttachments = 4
+
+// maxAttachmentThumbs 限制单会话缓存的图片缩略图数量。
+const maxAttachmentThumbs = 12
+
 func (p *Page) reloadMessages() {
 	p.messages = nil
 	p.oldestSeq = 0
@@ -1719,12 +1776,150 @@ func (p *Page) reloadMessages() {
 	if p.svc == nil || conv == "" {
 		return
 	}
+	if p.thumbConv != conv {
+		// 切换会话时清空缩略图缓存与未发送附件。
+		p.thumbConv = conv
+		p.thumbs = map[string]ui.ImageSource{}
+		p.thumbPending = map[string]bool{}
+		components.DiscardPending(p.pending)
+		p.pending = nil
+		p.attachErr = ""
+	}
 	page := p.svc.MessagesPage(conv, 0, contract.DefaultMessagePageSize)
 	p.messages = page.Items
 	p.hasMore = page.HasMore
 	if len(page.Items) > 0 {
 		p.oldestSeq = page.Items[0].Seq
 	}
+	p.ensureThumbs()
+}
+
+// ensureThumbs 为员工直聊消息里的图片附件异步解码缩略图。
+func (p *Page) ensureThumbs() {
+	if p.artifacts == nil || p.activeGroup() != nil {
+		return
+	}
+	for _, message := range p.messages {
+		if message.Role != contract.RoleUser {
+			continue
+		}
+		for _, artifact := range message.Artifacts {
+			if artifact.Kind != contract.ArtifactImage || !artifact.Available {
+				continue
+			}
+			if len(p.thumbs) >= maxAttachmentThumbs {
+				return
+			}
+			if _, ok := p.thumbs[artifact.ID]; ok {
+				continue
+			}
+			if p.thumbPending[artifact.ID] {
+				continue
+			}
+			p.thumbPending[artifact.ID] = true
+			go p.loadThumb(artifact.ID)
+		}
+	}
+}
+
+func (p *Page) loadThumb(id string) {
+	detail := p.artifacts.Artifact(id)
+	preview := components.LoadArtifactPreview(detail)
+	if p.hooks.Update == nil {
+		return
+	}
+	p.hooks.Update(func() {
+		delete(p.thumbPending, id)
+		if preview.Image != nil {
+			p.thumbs[id] = preview.Image
+		}
+	})
+}
+
+// messageImages 把一条用户消息里的图片附件转成渲染数据。
+func (p *Page) messageImages(m contract.ChatMessage) []components.MessageImage {
+	if len(m.Artifacts) == 0 {
+		return nil
+	}
+	out := make([]components.MessageImage, 0, len(m.Artifacts))
+	for _, artifact := range m.Artifacts {
+		if artifact.Kind != contract.ArtifactImage {
+			continue
+		}
+		out = append(out, components.MessageImage{
+			ID:     artifact.ID,
+			Title:  artifact.Title,
+			Source: p.thumbs[artifact.ID],
+		})
+	}
+	return out
+}
+
+// attachFiles 打开系统文件选择器，把选中的文件加入待发送附件。
+func (p *Page) attachFiles() {
+	if p.hooks.SelectAttachments == nil || p.streamingActive() || p.activeGroup() != nil {
+		return
+	}
+	paths, err := p.hooks.SelectAttachments()
+	if err != nil {
+		p.attachErr = err.Error()
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+	items, errs := components.LoadPendingAttachments(paths)
+	for _, item := range items {
+		if len(p.pending) >= maxPendingAttachments {
+			errs = append(errs, fmt.Sprintf("单条消息最多添加 %d 个附件", maxPendingAttachments))
+			break
+		}
+		p.pending = append(p.pending, item)
+	}
+	if len(errs) > 0 {
+		p.attachErr = strings.Join(errs, "；")
+		return
+	}
+	p.attachErr = ""
+}
+
+// pasteAttachment 处理输入区粘贴：直聊里图片/文件转为附件，群聊保持默认粘贴。
+func (p *Page) pasteAttachment(c *ui.Context, _ string) bool {
+	if p.activeGroup() != nil || p.streamingActive() || p.activeTask() != nil {
+		return false
+	}
+	data := c.Services().ReadClipboardData(transfer.PNG, transfer.FileList)
+	if len(data.Items()) == 0 {
+		return false
+	}
+	p.appendPasted(data)
+	return true
+}
+
+// appendPasted 把剪贴板内容加入待发送附件，超出上限时保留已加入的部分。
+func (p *Page) appendPasted(data transfer.Data) {
+	items, errs := components.PendingFromClipboard(data)
+	for _, item := range items {
+		if len(p.pending) >= maxPendingAttachments {
+			errs = append(errs, fmt.Sprintf("单条消息最多添加 %d 个附件", maxPendingAttachments))
+			break
+		}
+		p.pending = append(p.pending, item)
+	}
+	if len(errs) > 0 {
+		p.attachErr = strings.Join(errs, "；")
+		return
+	}
+	p.attachErr = ""
+}
+
+// removeAttachment 移除指定下标的待发送附件。
+func (p *Page) removeAttachment(index int) {
+	if index < 0 || index >= len(p.pending) {
+		return
+	}
+	components.DiscardPending(p.pending[index : index+1])
+	p.pending = append(p.pending[:index], p.pending[index+1:]...)
 }
 
 // loadEarlier 加载一页更早的消息并插到列表头部。
@@ -1746,6 +1941,7 @@ func (p *Page) loadEarlier() {
 	p.follow = false
 	p.messages = append(page.Items, p.messages...)
 	p.oldestSeq = page.Items[0].Seq
+	p.ensureThumbs()
 }
 
 // reconcileScrollShift 按列表增长的高度平移滚动位置，避免历史消息插入后视口跳动。

@@ -391,9 +391,9 @@ func (s *agentService) PinSession(id string, pinned bool) error {
 	return fmt.Errorf("会话不存在：%s", id)
 }
 
-func (s *agentService) Send(conversationID, text, modelID string) (string, <-chan contract.ChatEvent, error) {
+func (s *agentService) Send(conversationID, text, modelID string, attachments []contract.AttachmentInput) (string, <-chan contract.ChatEvent, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(attachments) == 0 {
 		return "", nil, errors.New("请输入消息内容")
 	}
 

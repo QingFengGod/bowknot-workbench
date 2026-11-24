@@ -106,6 +106,8 @@ type MessageViewProps struct {
 	AvatarText string
 	// OnOpenArtifact 打开正文文件引用指向的产物预览。
 	OnOpenArtifact func(id string)
+	// Images 是用户消息里的图片附件缩略图，由页面按需解码后传入。
+	Images []MessageImage
 	// ShowRetry 控制「重答」入口，通常只给最后一条已完成的助手回复。
 	ShowRetry bool
 	// Steps 是实时累积的思考与工具调用，仅当前会话内有效。
@@ -131,6 +133,8 @@ func MessageView(c *ui.Context, p MessageViewProps) ui.Element {
 	if p.Message.Role == contract.RoleUser {
 		return UserMessage(c, UserMessageProps{
 			Message:  p.Message,
+			Images:   p.Images,
+			OnOpen:   p.OnOpenArtifact,
 			OnDelete: p.OnDelete,
 		})
 	}

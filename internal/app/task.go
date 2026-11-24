@@ -495,6 +495,7 @@ func (s *TaskService) execute(taskID, assignee string) {
 		TaskID:         task.ID,
 		Visibility:     domain.VisibilityInternal,
 		SystemExtra:    s.taskSystemExtra(task),
+		AutoApprove:    true,
 	})
 	if err != nil {
 		s.finalize(task, domain.TaskFailed, "", "", "无法启动任务："+err.Error())

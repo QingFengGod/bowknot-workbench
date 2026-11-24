@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"bowknot-workbench/internal/contract"
@@ -19,8 +20,10 @@ import (
 type Hooks struct {
 	// Update 在主线程修改页面状态并触发重绘，供后台流式事件使用。
 	Update func(fn func())
-	// OpenAgentChat 跳转到指定员工的直聊会话。
-	OpenAgentChat func(agentID string)
+	// OpenAgentChat 跳转到任务对应的员工会话；conversationID 为空时落到最近直聊。
+	OpenAgentChat func(agentID, conversationID string)
+	// SelectAttachments 打开系统文件选择器，返回选中的本地路径；取消时返回空切片。
+	SelectAttachments func() ([]string, error)
 }
 
 // Page 是助手页的原生实现。
@@ -54,6 +57,13 @@ type Page struct {
 
 	draft   string
 	sendErr string
+	// pending 是已选中、尚未发送的附件；attachErr 展示附件选择失败的原因。
+	pending   []components.PendingAttachment
+	attachErr string
+	// thumbs 缓存已解码的消息图片缩略图，thumbPending 防止同一张图重复解码。
+	thumbs       map[string]ui.ImageSource
+	thumbPending map[string]bool
+	thumbSession string
 	// focusDraft 在切换或新建会话后的下一帧聚焦输入框。
 	focusDraft bool
 	// shown 标记页面首次显示，自动演示流在首次进入时才播放。
@@ -140,6 +150,8 @@ func New(svc contract.AssistantService, agents contract.AgentService, tasks cont
 		timeline:     components.NewTimeline(),
 		follow:       true,
 		menuOpen:     map[string]*bool{},
+		thumbs:       map[string]ui.ImageSource{},
+		thumbPending: map[string]bool{},
 		artifactHost: components.NewArtifactHost(artifacts),
 		groupOpen: map[string]*bool{
 			"pinned":    boolValue(true),
@@ -431,7 +443,7 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 			OnRetry:        func() { p.retryTask(task.ID) },
 		}
 		if p.hooks.OpenAgentChat != nil && task.AssigneeID != "" {
-			item.OnOpenChat = func() { p.hooks.OpenAgentChat(task.AssigneeID) }
+			item.OnOpenChat = func() { p.hooks.OpenAgentChat(task.AssigneeID, task.ThreadConversationID) }
 		}
 		return components.TaskCard(c, item)
 	}
@@ -440,6 +452,7 @@ func (p *Page) messageItem(c *ui.Context, m contract.ChatMessage) ui.Element {
 		Message:        m,
 		AvatarText:     "助手",
 		OnOpenArtifact: p.openArtifact,
+		Images:         p.messageImages(m),
 		ShowRetry:      m.Role == contract.RoleAssistant && m.ID == p.lastAssistantID() && m.Status != contract.MessageStreaming,
 		Steps:          p.timeline.Steps(m.ID),
 		StepOpen:       func(index int) *bool { return p.timeline.StepOpen(m.ID, index) },
@@ -785,6 +798,13 @@ func (p *Page) composer(c *ui.Context) {
 		Placeholder:    "输入消息，Enter 发送，Shift+Enter 换行",
 		Error:          p.sendErr,
 		Submit:         p.sendText,
+		Attachments: func(c *ui.Context) {
+			components.AttachmentTray(c, p.pending, p.removeAttachment)
+			if p.attachErr != "" {
+				ui.Text(c, p.attachErr).FontSize(11).TextColor(c.Theme().Danger)
+			}
+		},
+		OnPaste: p.pasteAttachment,
 		Cancel: func() {
 			if p.streaming(p.activeID) {
 				p.stop(p.activeID)
@@ -792,10 +812,12 @@ func (p *Page) composer(c *ui.Context) {
 		},
 		OnInput: func() {
 			p.sendErr = ""
+			p.attachErr = ""
 		},
 		Actions: func(c *ui.Context) {
 			t := c.Theme()
 
+			components.AttachButton(c, streamID == "" && len(p.pending) < maxPendingAttachments, p.attachFiles)
 			p.modelPicker(c)
 
 			if streamID != "" {
@@ -805,7 +827,7 @@ func (p *Page) composer(c *ui.Context) {
 				}
 				return
 			}
-			enabled := strings.TrimSpace(p.draft) != ""
+			enabled := strings.TrimSpace(p.draft) != "" || len(p.pending) > 0
 			send := components.CircleButton(c, components.IconSend, t.Accent, t.AccentText, enabled)
 			if send.Tooltip("发送").Clicked() && enabled {
 				p.send()
@@ -1036,7 +1058,7 @@ func (p *Page) deleteModal(c *ui.Context) {
 }
 
 func (p *Page) deleteMessageModal(c *ui.Context) {
-	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") {
+	switch ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，消息上的图片或附件会一并删除，确定删除吗？", "取消", "删除") {
 	case 1:
 		p.deleteMessage()
 	}
@@ -1140,10 +1162,13 @@ func (p *Page) send() {
 	}
 }
 
+// maxPendingAttachments 与后端校验保持一致：单条消息最多 4 个附件。
+const maxPendingAttachments = 4
+
 // sendText 发送一条消息；成功返回 true，由调用方决定是否清空输入。
 func (p *Page) sendText(text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || p.svc == nil || p.streaming(p.activeID) {
+	if (text == "" && len(p.pending) == 0) || p.svc == nil || p.streaming(p.activeID) {
 		return false
 	}
 
@@ -1160,12 +1185,19 @@ func (p *Page) sendText(text string) bool {
 	}
 
 	sessionID := p.activeID
-	messageID, events, err := p.svc.Send(sessionID, text, p.modelID())
+	attachments := make([]contract.AttachmentInput, 0, len(p.pending))
+	for _, item := range p.pending {
+		attachments = append(attachments, contract.AttachmentInput{Path: item.Path})
+	}
+	messageID, events, err := p.svc.Send(sessionID, text, p.modelID(), attachments)
 	if err != nil {
 		p.sendErr = err.Error()
 		return false
 	}
 
+	components.DiscardPending(p.pending)
+	p.pending = nil
+	p.attachErr = ""
 	p.draft = ""
 	p.sendErr = ""
 	p.focusDraft = true
@@ -1175,6 +1207,73 @@ func (p *Page) sendText(text string) bool {
 	p.stickToBottom()
 	p.consume(sessionID, events)
 	return true
+}
+
+// attachFiles 打开系统文件选择器，把选中的文件加入待发送附件。
+func (p *Page) attachFiles() {
+	if p.hooks.SelectAttachments == nil || p.streaming(p.activeID) {
+		return
+	}
+	paths, err := p.hooks.SelectAttachments()
+	if err != nil {
+		p.attachErr = err.Error()
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+	items, errs := components.LoadPendingAttachments(paths)
+	for _, item := range items {
+		if len(p.pending) >= maxPendingAttachments {
+			errs = append(errs, fmt.Sprintf("单条消息最多添加 %d 个附件", maxPendingAttachments))
+			break
+		}
+		p.pending = append(p.pending, item)
+	}
+	if len(errs) > 0 {
+		p.attachErr = strings.Join(errs, "；")
+		return
+	}
+	p.attachErr = ""
+}
+
+// pasteAttachment 处理输入区粘贴：图片/文件转为附件，纯文本交回默认粘贴。
+func (p *Page) pasteAttachment(c *ui.Context, _ string) bool {
+	if p.streaming(p.activeID) {
+		return false
+	}
+	data := c.Services().ReadClipboardData(transfer.PNG, transfer.FileList)
+	if len(data.Items()) == 0 {
+		return false
+	}
+	p.appendPasted(c, data)
+	return true
+}
+
+// appendPasted 把剪贴板内容加入待发送附件，超出上限时保留已加入的部分。
+func (p *Page) appendPasted(c *ui.Context, data transfer.Data) {
+	items, errs := components.PendingFromClipboard(data)
+	for _, item := range items {
+		if len(p.pending) >= maxPendingAttachments {
+			errs = append(errs, fmt.Sprintf("单条消息最多添加 %d 个附件", maxPendingAttachments))
+			break
+		}
+		p.pending = append(p.pending, item)
+	}
+	if len(errs) > 0 {
+		p.attachErr = strings.Join(errs, "；")
+		return
+	}
+	p.attachErr = ""
+}
+
+// removeAttachment 移除指定下标（从 0 开始）的待发送附件。
+func (p *Page) removeAttachment(index int) {
+	if index < 0 || index >= len(p.pending) {
+		return
+	}
+	components.DiscardPending(p.pending[index : index+1])
+	p.pending = append(p.pending[:index], p.pending[index+1:]...)
 }
 
 // autoReply 在历史会话没有助手回复时补一次演示流，每个会话只播放一次。
@@ -1470,6 +1569,9 @@ func (p *Page) reloadModels() {
 	}
 }
 
+// maxAttachmentThumbs 限制单会话缓存的图片缩略图数量，避免长期占用内存。
+const maxAttachmentThumbs = 12
+
 func (p *Page) reloadMessages() {
 	p.messages = nil
 	p.oldestSeq = 0
@@ -1477,12 +1579,84 @@ func (p *Page) reloadMessages() {
 	if p.svc == nil || p.activeID == "" {
 		return
 	}
+	if p.thumbSession != p.activeID {
+		// 切换会话时清空缩略图缓存与未发送附件，避免串到另一个会话。
+		p.thumbSession = p.activeID
+		p.thumbs = map[string]ui.ImageSource{}
+		p.thumbPending = map[string]bool{}
+		components.DiscardPending(p.pending)
+		p.pending = nil
+		p.attachErr = ""
+	}
 	page := p.svc.MessagesPage(p.activeID, 0, contract.DefaultMessagePageSize)
 	p.messages = page.Items
 	p.hasMore = page.HasMore
 	if len(page.Items) > 0 {
 		p.oldestSeq = page.Items[0].Seq
 	}
+	p.ensureThumbs()
+}
+
+// ensureThumbs 为消息里的图片附件异步解码缩略图，完成后回到主线程写缓存。
+func (p *Page) ensureThumbs() {
+	if p.artifacts == nil || len(p.messages) == 0 {
+		return
+	}
+	for _, message := range p.messages {
+		if message.Role != contract.RoleUser {
+			continue
+		}
+		for _, artifact := range message.Artifacts {
+			if artifact.Kind != contract.ArtifactImage || !artifact.Available {
+				continue
+			}
+			if len(p.thumbs) >= maxAttachmentThumbs {
+				return
+			}
+			if _, ok := p.thumbs[artifact.ID]; ok {
+				continue
+			}
+			if p.thumbPending[artifact.ID] {
+				continue
+			}
+			p.thumbPending[artifact.ID] = true
+			go p.loadThumb(artifact.ID)
+		}
+	}
+}
+
+// loadThumb 在后台读取并解码一张图片，经 Update 钩子写回页面状态。
+func (p *Page) loadThumb(id string) {
+	detail := p.artifacts.Artifact(id)
+	preview := components.LoadArtifactPreview(detail)
+	if p.hooks.Update == nil {
+		return
+	}
+	p.hooks.Update(func() {
+		delete(p.thumbPending, id)
+		if preview.Image != nil {
+			p.thumbs[id] = preview.Image
+		}
+	})
+}
+
+// messageImages 把一条用户消息里的图片附件转成渲染数据。
+func (p *Page) messageImages(m contract.ChatMessage) []components.MessageImage {
+	if len(m.Artifacts) == 0 {
+		return nil
+	}
+	out := make([]components.MessageImage, 0, len(m.Artifacts))
+	for _, artifact := range m.Artifacts {
+		if artifact.Kind != contract.ArtifactImage {
+			continue
+		}
+		out = append(out, components.MessageImage{
+			ID:     artifact.ID,
+			Title:  artifact.Title,
+			Source: p.thumbs[artifact.ID],
+		})
+	}
+	return out
 }
 
 // loadEarlier 加载一页更早的消息并插到列表头部。
@@ -1503,6 +1677,7 @@ func (p *Page) loadEarlier() {
 	p.follow = false
 	p.messages = append(page.Items, p.messages...)
 	p.oldestSeq = page.Items[0].Seq
+	p.ensureThumbs()
 }
 
 // reconcileScrollShift 按列表增长的高度平移滚动位置，避免历史消息插入后视口跳动。

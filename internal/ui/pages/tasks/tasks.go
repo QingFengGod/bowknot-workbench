@@ -16,8 +16,8 @@ import (
 type Hooks struct {
 	// Update 在主线程修改页面状态并触发重绘。
 	Update func(fn func())
-	// OpenAgentChat 跳转到员工的直聊会话。
-	OpenAgentChat func(agentID string)
+	// OpenAgentChat 跳转到任务对应的员工会话；conversationID 为空时落到最近直聊。
+	OpenAgentChat func(agentID, conversationID string)
 }
 
 // statusOption 是任务状态筛选。
@@ -384,7 +384,7 @@ func (p *Page) taskRow(c *ui.Context, task contract.TaskDetail) {
 			}
 			if p.hooks.OpenAgentChat != nil && task.AssigneeID != "" {
 				if components.TextButton(c, "打开对话", false).Clicked() {
-					p.hooks.OpenAgentChat(task.AssigneeID)
+					p.hooks.OpenAgentChat(task.AssigneeID, task.ThreadConversationID)
 				}
 			}
 			if task.Status == contract.TaskQueued || task.Status == contract.TaskRunning {
@@ -523,7 +523,7 @@ func (p *Page) detailDrawer(c *ui.Context) {
 			if p.hooks.OpenAgentChat != nil && task.AssigneeID != "" {
 				if components.Button(c, components.ButtonProps{Label: "打开员工对话", Variant: components.ButtonGhost}).Clicked() {
 					p.detailOpen = false
-					p.hooks.OpenAgentChat(task.AssigneeID)
+					p.hooks.OpenAgentChat(task.AssigneeID, task.ThreadConversationID)
 				}
 			}
 		},

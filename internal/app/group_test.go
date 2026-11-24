@@ -81,7 +81,7 @@ func TestGroupOrchestrationRoundsAndSummary(t *testing.T) {
 	group := agents.CreateGroup("方案评审群", []string{first, second, third})
 	key := "group:" + group.ID
 
-	_, events, err := agents.Send(key, "帮我看下这个方案", "")
+	_, events, err := agents.Send(key, "帮我看下这个方案", "", nil)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestGroupOrchestrationRoundLimit(t *testing.T) {
 	group := agents.CreateGroup("轮次测试群", memberIDs)
 	key := "group:" + group.ID
 
-	_, events, err := agents.Send(key, "请依次讨论", "")
+	_, events, err := agents.Send(key, "请依次讨论", "", nil)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -204,7 +204,7 @@ func TestGroupUserMentionSkipsMain(t *testing.T) {
 	group := agents.CreateGroup("用户点名群", []string{memberID})
 	key := "group:" + group.ID
 
-	messageID, events, err := agents.Send(key, "@甲 你怎么看", "")
+	messageID, events, err := agents.Send(key, "@甲 你怎么看", "", nil)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -286,7 +286,7 @@ func TestGroupStripsSpeakerPrefixFromReply(t *testing.T) {
 	group := agents.CreateGroup("前缀群", []string{memberID})
 	key := "group:" + group.ID
 
-	_, events, err := agents.Send(key, "@甲 在吗", "")
+	_, events, err := agents.Send(key, "@甲 在吗", "", nil)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}

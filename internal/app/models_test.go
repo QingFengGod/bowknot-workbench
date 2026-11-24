@@ -13,7 +13,7 @@ func TestAssistantRejectsUnknownModel(t *testing.T) {
 	svc := newFastAssistant(st)
 	svc.SetModels([]contract.ChatModel{{ID: "real-model", Name: "真实模型"}})
 
-	if _, _, err := svc.Send("session-1", "你好", "bk-pro"); err == nil || !strings.Contains(err.Error(), "模型不可用") {
+	if _, _, err := svc.Send("session-1", "你好", "bk-pro", nil); err == nil || !strings.Contains(err.Error(), "模型不可用") {
 		t.Fatalf("未知模型错误 = %v, want 中文模型不可用提示", err)
 	}
 

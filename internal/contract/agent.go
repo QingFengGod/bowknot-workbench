@@ -65,7 +65,8 @@ type AgentService interface {
 	PinSession(id string, pinned bool) error
 
 	// Send 追加用户消息并开始生成回复；群聊回复带发送者信息。
-	Send(conversationID, text, modelID string) (messageID string, events <-chan ChatEvent, err error)
+	// 附件只支持员工直聊，群聊收到附件会返回错误。
+	Send(conversationID, text, modelID string, attachments []AttachmentInput) (messageID string, events <-chan ChatEvent, err error)
 	// GroupRevision 返回群聊协作版本号，UI 据此刷新成员发言。
 	GroupRevision() uint64
 	// GroupBusy 判断指定群聊是否仍在进行协作轮次。

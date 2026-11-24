@@ -182,7 +182,7 @@ func TestDirectChatInjectsOwnTaskHistory(t *testing.T) {
 	if session.ID == "" {
 		t.Fatal("创建直聊会话失败")
 	}
-	_, events, err := agents.Send(session.ID, "你之前做过哪些任务？", "")
+	_, events, err := agents.Send(session.ID, "你之前做过哪些任务？", "", nil)
 	if err != nil {
 		t.Fatalf("直聊发送失败：%v", err)
 	}

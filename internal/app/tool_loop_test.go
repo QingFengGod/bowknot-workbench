@@ -96,7 +96,7 @@ func TestAssistantToolCallLoop(t *testing.T) {
 
 	svc := NewAssistantService(st, testLogger(), provider, tools, NewApprovalHub())
 	session := svc.CreateSession()
-	messageID, events, err := svc.Send(session.ID, "帮我执行任务", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "帮我执行任务", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestToolApprovalRejected(t *testing.T) {
 
 	svc := NewAssistantService(st, testLogger(), provider, tools, hub)
 	session := svc.CreateSession()
-	messageID, events, err := svc.Send(session.ID, "删除文件", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "删除文件", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestToolLoopStopsAtMaxRounds(t *testing.T) {
 
 	svc := NewAssistantService(st, testLogger(), provider, tools, NewApprovalHub())
 	session := svc.CreateSession()
-	_, events, err := svc.Send(session.ID, "一直调用工具", "bk-pro")
+	_, events, err := svc.Send(session.ID, "一直调用工具", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestDangerousToolKeepsMessageID(t *testing.T) {
 	svc := NewAssistantService(st, testLogger(), provider, tools, hub)
 	svc.SetArtifacts(artifacts)
 	session := svc.CreateSession()
-	messageID, events, err := svc.Send(session.ID, "写一份报告", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "写一份报告", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}

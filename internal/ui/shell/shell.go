@@ -52,8 +52,8 @@ var navItems = []navItem{
 	{Route: "/tasks", Label: "任务", Icon: components.IconTasks},
 	{Route: "/files", Label: "文件库", Icon: components.IconArtifact},
 	{Route: "/plugins", Label: "插件", Icon: components.IconPlugins},
-	{Route: "/settings", Label: "设置", Icon: components.IconSettings},
 	{Route: "/aigc/generate", Label: "AIGC", Icon: components.IconAIGC},
+	{Route: "/settings", Label: "设置", Icon: components.IconSettings},
 }
 
 // Shell 是原生窗口外壳：自绘标题栏、左侧一级导航与原生页面。
@@ -86,7 +86,10 @@ func New(deps Deps) *Shell {
 	if deps.Settings != nil {
 		s.mode = themeMode(deps.Settings.Settings().Appearance.Theme)
 	}
-	agentPage := agents.New(deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, agents.Hooks{Update: s.update})
+	agentPage := agents.New(deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, agents.Hooks{
+		Update:            s.update,
+		SelectAttachments: selectAttachments,
+	})
 	settingsPage := settings.New(settings.Deps{
 		App:          deps.App,
 		Models:       deps.Models,
@@ -108,19 +111,20 @@ func New(deps Deps) *Shell {
 			SelectPackage: selectAppPackage,
 		}),
 		"/assistant": assistant.New(deps.Assistant, deps.Agents, deps.Tasks, deps.Artifacts, deps.Memory, assistant.Hooks{
-			Update: s.update,
-			OpenAgentChat: func(agentID string) {
+			Update:            s.update,
+			SelectAttachments: selectAttachments,
+			OpenAgentChat: func(agentID, conversationID string) {
 				s.navigate("/agents")
-				agentPage.OpenAgentChat(agentID)
+				agentPage.OpenAgentChat(agentID, conversationID)
 			},
 		}),
 		"/agents": agentPage,
 		"/files":  artifacts.New(deps.Artifacts, deps.Agents, artifacts.Hooks{Update: s.update}),
 		"/tasks": tasks.New(deps.Tasks, deps.Agents, deps.Artifacts, tasks.Hooks{
 			Update: s.update,
-			OpenAgentChat: func(agentID string) {
+			OpenAgentChat: func(agentID, conversationID string) {
 				s.navigate("/agents")
-				agentPage.OpenAgentChat(agentID)
+				agentPage.OpenAgentChat(agentID, conversationID)
 			},
 		}),
 		"/aigc/generate": aigc.New(),
@@ -148,6 +152,19 @@ func selectAppPackage() (string, error) {
 		return "", nil
 	}
 	return files[0], nil
+}
+
+// selectAttachments 用系统文件选择器挑选聊天附件，取消时返回空切片。
+func selectAttachments() ([]string, error) {
+	return mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Title:    "添加附件",
+		Multiple: true,
+		Filters: []mygo.FileFilter{
+			{Name: "图片", MIMETypes: []string{"image/*"}},
+			{Name: "文本与代码", Extensions: []string{"txt", "md", "markdown", "json", "csv", "log", "yaml", "yml", "toml", "xml", "html", "css", "go", "py", "js", "ts", "tsx", "jsx", "java", "c", "cpp", "h", "rs", "rb", "php", "sh", "sql", "vue", "kt", "swift"}},
+			{Name: "所有文件", Extensions: []string{"*"}},
+		},
+	})
 }
 
 // selectPluginPackage 用系统文件选择器挑选 tar 插件包，取消时返回空路径。

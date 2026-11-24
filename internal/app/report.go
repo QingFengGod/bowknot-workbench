@@ -189,10 +189,11 @@ func humanizeReport(text string) string {
 // taskBrief 把任务转换成消息列表使用的摘要。
 func taskBrief(item domain.Task, assigneeName string) *contract.TaskBrief {
 	return &contract.TaskBrief{
-		ID:           item.ID,
-		Title:        item.Title,
-		Status:       contract.TaskStatus(item.Status),
-		AssigneeID:   item.AssigneeID,
-		AssigneeName: assigneeName,
+		ID:                   item.ID,
+		Title:                item.Title,
+		Status:               contract.TaskStatus(item.Status),
+		AssigneeID:           item.AssigneeID,
+		AssigneeName:         assigneeName,
+		ThreadConversationID: item.ThreadConversationID,
 	}
 }

@@ -86,7 +86,7 @@ func TestAssistantPersistsAcrossRestart(t *testing.T) {
 		t.Fatal("创建会话失败")
 	}
 
-	messageID, events, err := svc.Send(session.ID, "你好", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "你好", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAssistantStopPersistsStoppedMessage(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	session := svc.CreateSession()
-	_, events, err := svc.Send(session.ID, "请生成一段比较长的回复用于测试停止行为", "bk-pro")
+	_, events, err := svc.Send(session.ID, "请生成一段比较长的回复用于测试停止行为", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -174,11 +174,11 @@ func TestAssistantRejectsConcurrentSend(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	session := svc.CreateSession()
-	_, events, err := svc.Send(session.ID, "第一条消息", "bk-pro")
+	_, events, err := svc.Send(session.ID, "第一条消息", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	if _, _, err := svc.Send(session.ID, "第二条消息", "bk-pro"); err == nil {
+	if _, _, err := svc.Send(session.ID, "第二条消息", "bk-pro", nil); err == nil {
 		t.Fatal("并发发送未被拒绝")
 	}
 
@@ -192,7 +192,7 @@ func TestAssistantDeleteStreamingMessage(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	session := svc.CreateSession()
-	messageID, events, err := svc.Send(session.ID, "删除正在生成的消息", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "删除正在生成的消息", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -243,14 +243,14 @@ func TestAgentAndGroupPersistAcrossRestart(t *testing.T) {
 	}
 
 	session := svc.CreateSession(agent.ID)
-	_, events, err := svc.Send(session.ID, "单聊消息", "bk-pro")
+	_, events, err := svc.Send(session.ID, "单聊消息", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send agent: %v", err)
 	}
 	drainEvents(t, events)
 
 	groupConversationID := groupKey(group.ID)
-	_, events, err = svc.Send(groupConversationID, "群聊消息", "bk-pro")
+	_, events, err = svc.Send(groupConversationID, "群聊消息", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send group: %v", err)
 	}

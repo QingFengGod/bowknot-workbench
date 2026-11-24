@@ -20,6 +20,10 @@ type ComposerProps struct {
 	Cancel func()
 	// OnInput 在输入内容变化时回调，通常用来清除上一次的错误提示。
 	OnInput func()
+	// Attachments 渲染输入框内的待发送附件区，为 nil 时不构建。
+	Attachments func(c *ui.Context)
+	// OnPaste 在输入区粘贴时调用，返回 true 表示调用方已接管这次粘贴（例如粘贴图片为附件）。
+	OnPaste func(c *ui.Context, text string) bool
 	// Actions 是底部操作区插槽：模型选择、发送/停止等由调用方决定。
 	// 内容默认靠右，需要左侧控件时先在插槽里放一个 Grow 的占位。
 	Actions func(c *ui.Context)
@@ -55,12 +59,26 @@ func Composer(c *ui.Context, p ComposerProps) {
 			}
 
 			box.Children(func() {
+				if p.Attachments != nil {
+					p.Attachments(c)
+				}
 				input := ui.TextAreaBase(c, p.Draft).
 					Placeholder(p.Placeholder).
 					Lines(2, 8).
 					FillWidth().
 					FontSize(14)
+				input.OnPaste(func(text string) bool {
+					if p.OnPaste != nil {
+						return p.OnPaste(c, text)
+					}
+					return false
+				})
 				input.OnTextKey(func(k ui.TextKey) bool {
+					// 部分输入法会吞掉 Ctrl+V，这里先接管一次，避免图片粘贴失效；
+					// 没有附件可加时返回 false，让文本照常粘贴。
+					if p.OnPaste != nil && k.Key == ui.KeyV && k.Mods == ui.Cmd {
+						return p.OnPaste(c, k.Text())
+					}
 					if k.Key == ui.KeyEnter && k.Mods == 0 {
 						if p.Submit != nil && p.Submit(k.Text()) {
 							k.SetText("")

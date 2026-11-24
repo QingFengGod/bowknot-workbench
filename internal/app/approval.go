@@ -29,11 +29,11 @@ func (h *ApprovalHub) Register(runID, callID string) string {
 }
 
 // Resolve 回传用户选择；找不到等待中的请求时忽略。
+// 这里不删除登记项，由 Approve 收到结果后清理，避免用户比工具执行更快时丢结果。
 func (h *ApprovalHub) Resolve(runID, callID string, approved bool) {
 	token := approvalToken(runID, callID)
 	h.mu.Lock()
 	ch := h.pending[token]
-	delete(h.pending, token)
 	h.mu.Unlock()
 	if ch == nil {
 		return
@@ -42,6 +42,14 @@ func (h *ApprovalHub) Resolve(runID, callID string, approved bool) {
 	case ch <- approved:
 	default:
 	}
+}
+
+// Drop 清理没有被 Approve 消费的登记，用于工具提前返回或生成取消的场景。
+func (h *ApprovalHub) Drop(runID, callID string) {
+	token := approvalToken(runID, callID)
+	h.mu.Lock()
+	delete(h.pending, token)
+	h.mu.Unlock()
 }
 
 // Approve 实现 tool.Approver：按执行上下文里的令牌等待用户确认，

@@ -274,7 +274,7 @@ func TestAssistantWritesMemoryByTool(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	session := svc.CreateSession()
-	messageID, events, err := svc.Send(session.ID, "我更喜欢中文", "bk-pro")
+	messageID, events, err := svc.Send(session.ID, "我更喜欢中文", "bk-pro", nil)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}

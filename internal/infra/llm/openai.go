@@ -149,18 +149,18 @@ func (p *OpenAI) Complete(ctx context.Context, req ChatRequest) (string, error) 
 
 // buildPayload 把请求转换为 OpenAI 兼容载荷，Stream 与 Complete 共用。
 func buildPayload(req ChatRequest, model string, stream bool) chatPayload {
-	payload := chatPayload{Model: model, Stream: stream}
+	payload := chatPayload{Model: model, Stream: stream, MaxTokens: req.MaxTokens}
 	if req.System != "" {
 		payload.Messages = append(payload.Messages, payloadMessage{Role: "system", Content: req.System})
 	}
 	for _, item := range req.Messages {
-		// 只有完全空白的占位消息才跳过；带工具调用或工具回填的消息必须保留。
-		if item.Content == "" && len(item.ToolCalls) == 0 && item.ToolCallID == "" {
+		// 只有完全空白的占位消息才跳过；带工具调用、工具回填或多模态内容的消息必须保留。
+		if item.Content == "" && len(item.Parts) == 0 && len(item.ToolCalls) == 0 && item.ToolCallID == "" {
 			continue
 		}
 		message := payloadMessage{
 			Role:       item.Role,
-			Content:    item.Content,
+			Content:    payloadContent(item),
 			ToolCallID: item.ToolCallID,
 		}
 		for _, call := range item.ToolCalls {
@@ -186,6 +186,47 @@ func buildPayload(req ChatRequest, model string, stream bool) chatPayload {
 		})
 	}
 	return payload
+}
+
+// payloadContent 把消息内容序列化成纯文本或内容分段数组。
+// 多模态消息必须输出数组，纯文本消息保持字符串以兼容所有 OpenAI 兼容实现。
+func payloadContent(item Message) any {
+	if len(item.Parts) == 0 {
+		if item.Content == "" {
+			return nil
+		}
+		return item.Content
+	}
+
+	parts := make([]payloadContentPart, 0, len(item.Parts)+1)
+	// 纯文本正文在多模态消息里也必须保留，不能因为启用分段而丢掉用户输入。
+	if strings.TrimSpace(item.Content) != "" {
+		parts = append(parts, payloadContentPart{Type: ContentPartText, Text: item.Content})
+	}
+	for _, part := range item.Parts {
+		switch part.Type {
+		case ContentPartImage:
+			if part.ImageURL.URL == "" {
+				continue
+			}
+			parts = append(parts, payloadContentPart{
+				Type:     ContentPartImage,
+				ImageURL: &payloadImageURL{URL: part.ImageURL.URL},
+			})
+		default:
+			if part.Text == "" {
+				continue
+			}
+			parts = append(parts, payloadContentPart{Type: ContentPartText, Text: part.Text})
+		}
+	}
+	if len(parts) == 0 {
+		if item.Content == "" {
+			return nil
+		}
+		return item.Content
+	}
+	return parts
 }
 
 // start 发起请求并同步读取首个 SSE data 载荷，保证「返回 error 时必然尚未产生任何输出」。
@@ -343,17 +384,29 @@ func (p *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 const defaultToolParameters = `{"type":"object","properties":{}}`
 
 type chatPayload struct {
-	Model    string           `json:"model"`
-	Messages []payloadMessage `json:"messages"`
-	Stream   bool             `json:"stream"`
-	Tools    []payloadTool    `json:"tools,omitempty"`
+	Model     string           `json:"model"`
+	Messages  []payloadMessage `json:"messages"`
+	Stream    bool             `json:"stream"`
+	Tools     []payloadTool    `json:"tools,omitempty"`
+	MaxTokens int              `json:"max_tokens,omitempty"`
 }
 
 type payloadMessage struct {
-	Role       string            `json:"role"`
-	Content    string            `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content 在纯文本消息里是字符串，多模态消息里是内容分段数组。
+	Content    any               `json:"content,omitempty"`
 	ToolCalls  []payloadToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+type payloadContentPart struct {
+	Type     string           `json:"type"`
+	Text     string           `json:"text,omitempty"`
+	ImageURL *payloadImageURL `json:"image_url,omitempty"`
+}
+
+type payloadImageURL struct {
+	URL string `json:"url"`
 }
 
 type payloadTool struct {

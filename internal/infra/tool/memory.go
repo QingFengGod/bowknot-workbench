@@ -60,15 +60,15 @@ func MemoryToolSpecs() []ToolSpec {
 			Name: RememberToolID,
 			Description: "把用户透露的长期信息写入记忆。触发条件：用户这轮说到了自己的身份或背景（姓名、职业、所在城市、项目）、偏好与习惯、长期目标或计划、重要决定、值得记住的经历，或对你提出长期有效的称呼、语气、格式要求。" +
 				"命中任意一类时必须先调用本工具再回复，不要等用户要求，也不要向用户宣告。" +
-				"一次只写一条，用第一人称完整陈述，不超过 200 字；一轮最多写两条。" +
+				"一次只写一条，用第三人称完整陈述：指代用户一律用「用户」，指代你自己用「我」，不要用「你」指代用户；不超过 200 字，一轮最多写两条。" +
 				"不要写入普通问答、一次性任务、临时情绪、寒暄、转述他人的信息，以及密码、密钥等敏感内容。" +
-				"示例：用户说「我以后都用简体中文回复」→ 写入「我希望以后都用简体中文回复」；用户问「今天天气怎么样」→ 不写入。",
+				"示例：用户说「我以后都用简体中文回复」→ 写入「用户希望以后都用简体中文回复」；用户问「今天天气怎么样」→ 不写入。",
 			Source:   SourceBuiltin,
 			SourceID: "builtin",
 			Parameters: `{
   "type": "object",
   "properties": {
-    "content": {"type": "string", "description": "一条完整、可独立理解的记忆，例如「我喜欢喝美式咖啡」"},
+    "content": {"type": "string", "description": "一条完整、可独立理解的记忆，用第三人称：用户用「用户」，你自己用「我」，例如「用户喜欢喝美式咖啡」"},
     "kind": {"type": "string", "enum": ["profile", "preference", "fact", "decision", "event"], "description": "记忆类型，缺省为 preference"},
     "occurred_at": {"type": "string", "description": "事情发生的时间，RFC3339 或 YYYY-MM-DD；不确定时省略"}
   },

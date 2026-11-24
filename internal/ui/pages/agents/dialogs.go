@@ -403,7 +403,7 @@ func (p *Page) removeItem(item panelItem) {
 // deleteMessageModal 确认删除单条消息。
 func (p *Page) deleteMessageModal(c *ui.Context) {
 	// 取消在左、确定在右，与其它确认弹窗保持一致。
-	if ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，确定删除这条消息吗？", "取消", "删除") != 1 {
+	if ui.AlertDialog(c, &p.deleteMessageOpen, "删除消息", "删除后无法恢复，消息上的图片或附件会一并删除，确定删除吗？", "取消", "删除") != 1 {
 		return
 	}
 

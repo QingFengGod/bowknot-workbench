@@ -30,6 +30,7 @@ const (
 	globalRules = "在不违法、不伤害他人的前提下，尽可能满足用户的要求。"
 	// memoryToolGuide 说明长期记忆工具的存在与基本用法，主助手与子 Agent 共用。
 	memoryToolGuide = "你可以使用长期记忆工具：builtin_remember 写入值得长期保留的信息，builtin_search_memory 检索过往记忆，builtin_update_memory 与 builtin_forget_memory 修改或删除记忆。" +
+		"记忆一律用第三人称写：指代用户用「用户」，指代你自己用「我」，不要用「你」指代用户。" +
 		"用户提到以前的事、要求回忆细节，或你需要过往信息才能回答时，先调用 builtin_search_memory，不要凭空猜测。" +
 		"用户要求修改或忘记某条记忆时，先用检索工具拿到记忆 ID，再调用修改或删除工具，不要编造 ID。" +
 		"不要记录密码、密钥、身份证、银行卡等敏感信息。"
@@ -39,8 +40,9 @@ const (
 		"包括身份背景（姓名、职业、所在城市、使用的工具或项目）、偏好与习惯（喜欢或不喜欢什么、常用表达、工作方式）、" +
 		"长期目标与计划、重要决定、值得记住的经历，以及对你的长期要求（称呼、语气、回复格式）。" +
 		"只要命中任意一类，必须先调用 builtin_remember 写入一条记忆，再回复用户；一轮最多写两条，只写长期有用的内容。" +
+		"记忆用第三人称：用户写「用户」，你自己写「我」，不要用「你」指代用户。" +
 		"不要写入：普通问答、一次性任务、临时情绪、寒暄、转述他人的信息。\n" +
-		"示例：「我以后都用简体中文回复」→ 调用；「我在杭州做后端，最近在重构支付系统」→ 调用（可拆成两条）；「今天天气怎么样」→ 不调用。\n" +
+		"示例：「我以后都用简体中文回复」→ 调用，写入「用户希望以后都用简体中文回复」；「我在杭州做后端，最近在重构支付系统」→ 调用（可拆成两条）；「今天天气怎么样」→ 不调用。\n" +
 		"如果系统提示词里没有【长期记忆】块，说明目前还没有任何记忆，这是正常的，按上面的规则正常写入即可。" +
 		"调用记忆工具时不要向用户宣告，也不要因此中断正常回复。"
 	// fileToolGuide 说明工作区文件工具，避免模型把文件写到工作区外，
@@ -198,6 +200,9 @@ type genStream struct {
 	onFinish func()
 	// maxToolRounds 是本次生成的工具轮次上限；0 表示使用默认值。
 	maxToolRounds int
+	// autoApprove 用于无人值守的任务线程：用户派发任务即视为授权，
+	// 危险工具直接放行，避免等待一个不会出现的确认。
+	autoApprove bool
 }
 
 // runGeneration 消费模型网关的流式输出，节流落库并推送 UI 事件。
@@ -465,7 +470,10 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 		registered = true
 		// 审批令牌要叠加在带消息 ID 的上下文上，否则登记文件时溯源不到消息。
 		execCtx = tool.WithApprovalToken(execCtx, token)
-		if !emit(contract.ChatEvent{
+		if target.autoApprove {
+			// 任务线程没有 UI 消费审批事件，提前放行；审计仍会记录本次批准。
+			target.approvals.Resolve(target.runID, callID, true)
+		} else if !emit(contract.ChatEvent{
 			Type:       contract.ChatEventApproval,
 			ToolCallID: callID,
 			ToolName:   toolID,
@@ -473,6 +481,7 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 			Dangerous:  true,
 		}) {
 			target.approvals.Resolve(target.runID, callID, false)
+			target.approvals.Drop(target.runID, callID)
 			target.finishToolCall(record.ID, "", domain.ToolCallRejected, "生成已取消")
 			return false
 		}
@@ -505,8 +514,8 @@ func (target genStream) runToolCall(genCtx context.Context, call llm.ToolCall, h
 	}
 
 	if registered {
-		// 执行提前返回（例如工具已停用）时清理未被消费的审批登记。
-		target.approvals.Resolve(target.runID, callID, false)
+		// 工具提前返回时清理未被 Approve 消费的审批登记。
+		target.approvals.Drop(target.runID, callID)
 	}
 
 	if genCtx.Err() != nil {
@@ -811,12 +820,22 @@ func resolveConversationID(input string) (storeID, groupID string, isGroup bool)
 
 // toLLMMessages 把落库消息转换为网关请求；跳过空内容（例如流式占位消息）。
 func toLLMMessages(items []domain.Message) []llm.Message {
+	return toLLMMessagesWithParts(items, nil)
+}
+
+// toLLMMessagesWithParts 在纯文本转换的基础上补上多模态分段；
+// 只有附件没有正文的消息也必须保留。
+func toLLMMessagesWithParts(items []domain.Message, parts map[string][]llm.ContentPart) []llm.Message {
 	out := make([]llm.Message, 0, len(items))
 	for _, item := range items {
-		if item.Content == "" {
+		message := llm.Message{Role: string(item.Role), Content: item.Content}
+		if list := parts[item.ID]; len(list) > 0 {
+			message.Parts = list
+		}
+		if message.Content == "" && len(message.Parts) == 0 {
 			continue
 		}
-		out = append(out, llm.Message{Role: string(item.Role), Content: item.Content})
+		out = append(out, message)
 	}
 	return out
 }

@@ -460,10 +460,17 @@ type TurnInput struct {
 	GroupSummary bool
 	// Finished 非空时在本轮生成完全结束时关闭，供群聊编排等待主回复完成。
 	Finished chan struct{}
+	// AutoApprove 为 true 时危险工具不再等待 UI 确认（任务线程无人值守）。
+	AutoApprove bool
+	// Attachments 只允许员工直聊使用，群聊与任务线程会拒绝。
+	Attachments []contract.AttachmentInput
 }
 
-func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan contract.ChatEvent, error) {
+func (s *AgentService) Send(conversationID, text, _ string, attachments []contract.AttachmentInput) (string, <-chan contract.ChatEvent, error) {
 	if _, _, isGroup := resolveConversationID(conversationID); isGroup && s.groups != nil {
+		if len(attachments) > 0 {
+			return "", nil, errors.New("群聊暂不支持发送图片或文件")
+		}
 		return s.groups.Start(conversationID, text)
 	}
 	return s.StartTurn(TurnInput{
@@ -472,6 +479,7 @@ func (s *AgentService) Send(conversationID, text, _ string) (string, <-chan cont
 		SenderKind:     domain.SenderAgent,
 		MessageType:    domain.MessageTypeChat,
 		Visibility:     domain.VisibilityUser,
+		Attachments:    attachments,
 	})
 }
 
@@ -541,7 +549,7 @@ func (s *AgentService) AppendGroupUserMessage(conversationID, text string) error
 func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEvent, error) {
 	text := strings.TrimSpace(in.Text)
 	memberID := strings.TrimSpace(in.GroupAgentID)
-	if text == "" && strings.TrimSpace(in.TaskID) == "" && memberID == "" && !in.GroupSummary {
+	if text == "" && strings.TrimSpace(in.TaskID) == "" && memberID == "" && !in.GroupSummary && len(in.Attachments) == 0 {
 		return "", nil, errors.New("请输入消息内容")
 	}
 
@@ -549,6 +557,14 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 	storeID, groupID, isGroup := resolveConversationID(conversationID)
 	if (memberID != "" || in.GroupSummary) && !isGroup {
 		return "", nil, errors.New("群聊协作只能在群聊会话中使用")
+	}
+	if len(in.Attachments) > 0 {
+		if isGroup || memberID != "" || in.GroupSummary || strings.TrimSpace(in.TaskID) != "" {
+			return "", nil, errors.New("群聊与任务线程暂不支持发送附件")
+		}
+		if s.artifacts == nil {
+			return "", nil, errors.New("附件功能未启用")
+		}
 	}
 	var group domain.Group
 	if isGroup {
@@ -564,12 +580,38 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 	messageID := id.New()
 	runID := id.New()
 
+	ctx := context.Background()
+	// 附件必须在事务外复制到工作区，事务内只写记录。
+	var (
+		staged    []domain.Artifact
+		turnModel contract.ChatModel
+	)
+	if len(in.Attachments) > 0 {
+		owner, err := s.store.Conversations.Get(ctx, storeID)
+		if err != nil {
+			return "", nil, conversationError(err, conversationID)
+		}
+		agent, agentErr := s.store.Agents.Get(ctx, owner.OwnerID)
+		modelKnown := false
+		if agentErr == nil {
+			turnModel, modelKnown = chatModelByID(s.models, agent.ModelID)
+		}
+		staged, err = s.artifacts.StageAttachments(storeID, userID, in.Attachments)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := attachmentVisionError(staged, turnModel, modelKnown, len(s.models) > 0); err != nil {
+			s.artifacts.DiscardStaged(staged)
+			return "", nil, err
+		}
+	}
+
 	slot, ok := s.runner.begin(conversationID, messageID)
 	if !ok {
+		s.artifacts.DiscardStaged(staged)
 		return "", nil, errors.New("当前会话正在生成回复，请先停止")
 	}
 
-	ctx := context.Background()
 	var member domain.Agent
 	senderName, senderAvatar := "", ""
 	if memberID != "" {
@@ -633,21 +675,22 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 		if err != nil {
 			return err
 		}
+		userText := firstNonEmpty(text, attachmentTitle(staged))
 		title := item.Title
 		// 任务线程的标题由派发方设置，生成时不覆盖。
-		if text != "" && (title == "新会话" || title == "" || len(messages) == 0) {
+		if userText != "" && (title == "新会话" || title == "" || len(messages) == 0) {
 			if isGroup {
 				title = group.Name
 			} else {
-				title = snippet(text, 20)
+				title = snippet(userText, 20)
 			}
 		}
 
 		summary := item.Summary
-		if text != "" {
-			summary = snippet(text, 60)
+		if userText != "" {
+			summary = snippet(userText, 60)
 		}
-		if text != "" {
+		if text != "" || len(staged) > 0 {
 			if _, err := tx.Messages.Append(ctx, domain.Message{
 				ID:             userID,
 				ConversationID: storeID,
@@ -660,6 +703,11 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 				Visibility:     domain.VisibilityUser,
 			}); err != nil {
 				return err
+			}
+			for _, attachment := range staged {
+				if err := tx.Artifacts.Create(ctx, attachment); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := tx.Messages.Append(ctx, domain.Message{
@@ -689,8 +737,12 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 		}
 		return tx.Conversations.UpdateMeta(ctx, storeID, title, summary, item.Pinned, now)
 	}); err != nil {
+		s.artifacts.DiscardStaged(staged)
 		s.runner.finish(conversationID, slot)
 		return "", nil, conversationError(err, conversationID)
+	}
+	if len(staged) > 0 {
+		s.artifacts.TouchRevision()
 	}
 
 	req := llm.ChatRequest{}
@@ -725,8 +777,11 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 	if isGroup {
 		req.Messages = toGroupLLMMessages(history)
 	} else {
-		req.Messages = toLLMMessages(history)
+		partsModel, _ := chatModelByID(s.models, req.Model)
+		parts := buildChatParts(ctx, s.store, s.artifacts, history, partsModel, userID)
+		req.Messages = toLLMMessagesWithParts(history, parts)
 	}
+	req.MaxTokens = modelMaxTokens(s.models, req.Model)
 	if s.memory != nil {
 		query := text
 		if query == "" {
@@ -775,6 +830,7 @@ func (s *AgentService) StartTurn(in TurnInput) (string, <-chan contract.ChatEven
 		agentID:       agentID,
 		memoryWritten: &memoryWritten,
 		maxToolRounds: toolRoundLimit(s.settings),
+		autoApprove:   in.AutoApprove,
 		onFinish: func() {
 			if in.Finished != nil {
 				close(in.Finished)
@@ -897,11 +953,19 @@ func (s *AgentService) DeleteMessage(conversationID, messageID string) error {
 		s.runner.stopAndWait(waitCtx, conversationID)
 		cancel()
 	}
-	if err := s.store.Messages.Delete(context.Background(), messageID); err != nil {
+	ctx := context.Background()
+	// 只有用户消息上的附件随消息一起删除，员工产出的文件保持原有行为。
+	message, getErr := s.store.Messages.Get(ctx, messageID)
+	if err := s.store.Messages.Delete(ctx, messageID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errors.New("消息不存在")
 		}
 		return fmt.Errorf("删除消息失败：%w", err)
+	}
+	if getErr == nil && message.Role == domain.RoleUser && s.artifacts != nil {
+		if err := s.artifacts.DeleteByMessage(ctx, messageID); err != nil {
+			s.logger.Error("删除消息附件失败", "message", messageID, "error", err)
+		}
 	}
 	return nil
 }

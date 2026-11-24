@@ -462,13 +462,16 @@ func (s *AssistantService) PinSession(sessionID string, pinned bool) error {
 	return nil
 }
 
-func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan contract.ChatEvent, error) {
+func (s *AssistantService) Send(sessionID, text, modelID string, attachments []contract.AttachmentInput) (string, <-chan contract.ChatEvent, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(attachments) == 0 {
 		return "", nil, errors.New("请输入消息内容")
 	}
 	if err := modelAvailable(s.models, modelID); err != nil {
 		return "", nil, err
+	}
+	if len(attachments) > 0 && s.artifacts == nil {
+		return "", nil, errors.New("附件功能未启用")
 	}
 
 	now := time.Now().UnixMilli()
@@ -476,8 +479,23 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 	messageID := id.New()
 	runID := id.New()
 
+	model, modelKnown := chatModelByID(s.models, modelID)
+	var staged []domain.Artifact
+	if len(attachments) > 0 {
+		var err error
+		staged, err = s.artifacts.StageAttachments(sessionID, userID, attachments)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := attachmentVisionError(staged, model, modelKnown, len(s.models) > 0); err != nil {
+			s.artifacts.DiscardStaged(staged)
+			return "", nil, err
+		}
+	}
+
 	slot, ok := s.runner.begin(sessionID, messageID)
 	if !ok {
+		s.artifacts.DiscardStaged(staged)
 		return "", nil, errors.New("当前会话正在生成回复，请先停止")
 	}
 
@@ -496,7 +514,7 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 		history = messages
 		title := item.Title
 		if title == "新会话" || len(messages) == 0 {
-			title = snippet(text, 20)
+			title = snippet(firstNonEmpty(text, attachmentTitle(staged)), 20)
 		}
 
 		if _, err := tx.Messages.Append(ctx, domain.Message{
@@ -511,6 +529,11 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 			Visibility:     domain.VisibilityUser,
 		}); err != nil {
 			return err
+		}
+		for _, attachment := range staged {
+			if err := tx.Artifacts.Create(ctx, attachment); err != nil {
+				return err
+			}
 		}
 		// 网关请求必须包含本轮用户消息，否则模型看不到最新问题。
 		history = append(history, domain.Message{
@@ -546,11 +569,16 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 		}); err != nil {
 			return err
 		}
-		return tx.Conversations.UpdateMeta(ctx, sessionID, title, snippet(text, 60), item.Pinned, now)
+		return tx.Conversations.UpdateMeta(ctx, sessionID, title, snippet(firstNonEmpty(text, attachmentTitle(staged)), 60), item.Pinned, now)
 	}); err != nil {
+		s.artifacts.DiscardStaged(staged)
 		s.runner.finish(sessionID, slot)
 		return "", nil, conversationError(err, sessionID)
 	}
+	if len(staged) > 0 {
+		s.artifacts.TouchRevision()
+	}
+	parts := buildChatParts(ctx, s.store, s.artifacts, history, model, userID)
 
 	events := make(chan contract.ChatEvent, eventBuffer)
 	system := s.systemPrompt()
@@ -575,9 +603,10 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 		runID:    runID,
 		provider: s.provider,
 		req: llm.ChatRequest{
-			Model:    modelID,
-			System:   system,
-			Messages: toLLMMessages(history),
+			Model:     modelID,
+			System:    system,
+			Messages:  toLLMMessagesWithParts(history, parts),
+			MaxTokens: model.MaxOutputTokens,
 		},
 		events:        events,
 		slot:          slot,
@@ -588,6 +617,16 @@ func (s *AssistantService) Send(sessionID, text, modelID string) (string, <-chan
 		maxToolRounds: toolRoundLimit(s.settings),
 	})
 	return messageID, events, nil
+}
+
+// attachmentTitle 返回第一个附件的显示名，用于纯附件消息的会话标题。
+func attachmentTitle(staged []domain.Artifact) string {
+	for _, item := range staged {
+		if strings.TrimSpace(item.Title) != "" {
+			return item.Title
+		}
+	}
+	return ""
 }
 
 func (s *AssistantService) AutoReply(sessionID string) (string, <-chan contract.ChatEvent, bool) {
@@ -754,6 +793,8 @@ func (s *AssistantService) Regenerate(sessionID, messageID string) (<-chan contr
 			system = system + "\n\n" + block
 		}
 	}
+	// 重答没有指定模型，历史图片统一降级为文字提示，避免非视觉模型直接失败。
+	parts := buildChatParts(ctx, s.store, s.artifacts, history, contract.ChatModel{}, "")
 	memoryWritten := false
 	go runGeneration(genStream{
 		store:     s.store,
@@ -765,7 +806,7 @@ func (s *AssistantService) Regenerate(sessionID, messageID string) (<-chan contr
 		provider:  s.provider,
 		req: llm.ChatRequest{
 			System:   system,
-			Messages: toLLMMessages(history),
+			Messages: toLLMMessagesWithParts(history, parts),
 		},
 		events:        events,
 		slot:          slot,
@@ -784,11 +825,19 @@ func (s *AssistantService) DeleteMessage(sessionID, messageID string) error {
 		s.runner.stopAndWait(waitCtx, sessionID)
 		cancel()
 	}
-	if err := s.store.Messages.Delete(context.Background(), messageID); err != nil {
+	ctx := context.Background()
+	// 只有用户消息上的附件随消息一起删除，助手消息上的产物保持原有行为。
+	message, getErr := s.store.Messages.Get(ctx, messageID)
+	if err := s.store.Messages.Delete(ctx, messageID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errors.New("消息不存在")
 		}
 		return fmt.Errorf("删除消息失败：%w", err)
+	}
+	if getErr == nil && message.Role == domain.RoleUser && s.artifacts != nil {
+		if err := s.artifacts.DeleteByMessage(ctx, messageID); err != nil {
+			s.logger.Error("删除消息附件失败", "message", messageID, "error", err)
+		}
 	}
 	return nil
 }

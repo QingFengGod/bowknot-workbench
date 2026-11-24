@@ -15,10 +15,31 @@ import (
 // system / user / assistant / tool。工具调用轮次里，assistant 消息携带
 // ToolCalls，随后每条工具结果以 role=tool 与对应的 ToolCallID 回填。
 type Message struct {
-	Role       string
-	Content    string
+	Role    string
+	Content string
+	// Parts 非空时表示多模态消息，Content 只作为纯文本兜底；
+	// 序列化时优先使用 Parts，文本与图片按声明顺序排列。
+	Parts      []ContentPart
 	ToolCalls  []ToolCall
 	ToolCallID string
+}
+
+// ContentPart 是多模态消息的一段内容，Type 取 text 或 image_url。
+type ContentPart struct {
+	Type     string
+	Text     string
+	ImageURL ImageURL
+}
+
+// ContentPartText / ContentPartImage 是多模态内容的类型取值。
+const (
+	ContentPartText  = "text"
+	ContentPartImage = "image_url"
+)
+
+// ImageURL 是图片内容的引用；User 使用 data URL，避免依赖外部图床。
+type ImageURL struct {
+	URL string
 }
 
 // ToolSchema 声明一个可供模型调用的工具。
@@ -38,6 +59,8 @@ type ChatRequest struct {
 	Tools []ToolSchema
 	// Messages 按时间顺序排列，最后一条通常是最新的用户消息。
 	Messages []Message
+	// MaxTokens 是最大输出 token 数，<= 0 时不下发。
+	MaxTokens int
 }
 
 // Usage 是一次生成的 token 用量，上游未返回时为 nil。

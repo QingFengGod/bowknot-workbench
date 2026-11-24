@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -328,6 +329,90 @@ func TestOpenAICompleteReturnsContent(t *testing.T) {
 	}
 	if strings.Contains(payload, testAPIKey) {
 		t.Fatal("请求体不应包含密钥")
+	}
+}
+
+func TestOpenAISerializesMultimodalContent(t *testing.T) {
+	var raw string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw = readAllBody(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey, DefaultModel: "dft-model"})
+	chunks, err := provider.Stream(context.Background(), ChatRequest{
+		MaxTokens: 512,
+		Messages: []Message{{
+			Role:    "user",
+			Content: "补充说明",
+			Parts: []ContentPart{
+				{Type: ContentPartText, Text: "这张图是什么"},
+				{Type: ContentPartImage, ImageURL: ImageURL{URL: "data:image/png;base64,AAAA"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	collectChunks(t, chunks)
+
+	var payload struct {
+		MaxTokens int `json:"max_tokens"`
+		Messages  []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				ImageURL struct {
+					URL string `json:"url"`
+				} `json:"image_url"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("解析请求体失败：%v，body=%s", err, raw)
+	}
+	if payload.MaxTokens != 512 {
+		t.Fatalf("max_tokens = %d, want 512", payload.MaxTokens)
+	}
+	if len(payload.Messages) != 1 || len(payload.Messages[0].Content) != 3 {
+		t.Fatalf("多模态消息序列化异常：%+v", payload.Messages)
+	}
+	if payload.Messages[0].Content[0].Text != "补充说明" {
+		t.Fatalf("多模态消息丢失正文：%+v", payload.Messages[0].Content[0])
+	}
+	if payload.Messages[0].Content[1].Type != ContentPartText || payload.Messages[0].Content[1].Text != "这张图是什么" {
+		t.Fatalf("文本分段异常：%+v", payload.Messages[0].Content[1])
+	}
+	if payload.Messages[0].Content[2].Type != ContentPartImage ||
+		payload.Messages[0].Content[2].ImageURL.URL != "data:image/png;base64,AAAA" {
+		t.Fatalf("图片片段异常：%+v", payload.Messages[0].Content[2])
+	}
+}
+
+func TestOpenAIOmitsMaxTokensWhenUnset(t *testing.T) {
+	var raw string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw = readAllBody(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := New(Options{BaseURL: server.URL, APIKey: testAPIKey, DefaultModel: "dft-model"})
+	chunks, err := provider.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "你好"}}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	collectChunks(t, chunks)
+
+	if strings.Contains(raw, "max_tokens") {
+		t.Fatalf("未配置最大输出时不应下发 max_tokens：%s", raw)
+	}
+	if !strings.Contains(raw, `"content":"你好"`) {
+		t.Fatalf("纯文本消息应保持字符串 content：%s", raw)
 	}
 }
 
